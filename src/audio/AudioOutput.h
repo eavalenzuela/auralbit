@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 
@@ -29,14 +31,25 @@ public:
     uint32_t sample_rate() const { return sample_rate_; }
     uint16_t channels() const { return channels_; }
 
+    // Snapshot of the most recently played mono-mixed samples. Lock-free SPSC:
+    // the audio rt callback is the producer, the UI thread is the consumer.
+    // Returns the number of samples actually written to `dst` (0 if nothing has
+    // played yet). Always reads the most recent `count` samples (or fewer).
+    static constexpr size_t kVizCapacity = 4096;
+    size_t peek_viz(float* dst, size_t count) const;
+
 private:
     static void on_data(ma_device* dev, void* output, const void* input, uint32_t frame_count);
+    void write_viz(const float* interleaved, uint32_t frame_count);
 
     std::unique_ptr<ma_device> device_;
     std::unique_ptr<RingBuffer> ring_;
     bool started_ = false;
     uint32_t sample_rate_ = 0;
     uint16_t channels_ = 0;
+
+    std::array<float, kVizCapacity> viz_{};
+    std::atomic<uint64_t> viz_written_{0};  // Total samples written; cumulative.
 };
 
 }  // namespace auralbit::audio

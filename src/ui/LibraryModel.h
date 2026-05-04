@@ -17,7 +17,7 @@ constexpr int TrackPath = Qt::UserRole + 3;   // QString
 constexpr int DurationMs = Qt::UserRole + 4;  // qlonglong
 }  // namespace roles
 
-enum class RowKind { Artist, Album, Track };
+enum class RowKind { Artist, Album, Track, Playlist };
 
 class LibraryModel : public QStandardItemModel {
     Q_OBJECT

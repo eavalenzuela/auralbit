@@ -32,6 +32,11 @@ public:
     double position_seconds() const;
     double duration_seconds() const;
 
+    // Borrow the audio output (e.g. for the visualizer's PCM tap). Lifetime
+    // matches the Player's. Safe to call from any thread.
+    const AudioOutput& output() const { return output_; }
+    uint32_t sample_rate() const { return sample_rate_.load(std::memory_order_acquire); }
+
 private:
     void decode_loop();
 

@@ -29,6 +29,10 @@ set(AURALBIT_LIBRARY_SOURCES
     library/Database.h
     library/Scanner.cpp
     library/Scanner.h
+    library/PlaylistIO.cpp
+    library/PlaylistIO.h
+    library/Charset.cpp
+    library/Charset.h
 )
 
 add_library(auralbit_library STATIC ${AURALBIT_LIBRARY_SOURCES})
@@ -49,8 +53,12 @@ qt_add_executable(auralbit
     ui/LibraryModel.h
     ui/LibraryTree.cpp
     ui/LibraryTree.h
+    ui/PlaylistsModel.cpp
+    ui/PlaylistsModel.h
     ui/TransportBar.cpp
     ui/TransportBar.h
+    visualizer/Visualizer.cpp
+    visualizer/Visualizer.h
     ${CMAKE_SOURCE_DIR}/resources/auralbit.qrc
 )
 target_link_libraries(auralbit PRIVATE

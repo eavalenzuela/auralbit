@@ -62,6 +62,36 @@ void AudioOutput::on_data(ma_device* dev, void* output, const void* /*input*/, u
     if (got < samples_wanted) {
         std::memset(out + got, 0, (samples_wanted - got) * sizeof(float));
     }
+    self->write_viz(out, frames);
+}
+
+void AudioOutput::write_viz(const float* interleaved, uint32_t frame_count) {
+    const uint64_t base = viz_written_.load(std::memory_order_relaxed);
+    const uint16_t ch = channels_ ? channels_ : 1;
+    constexpr size_t mask = kVizCapacity - 1;
+    static_assert((kVizCapacity & (kVizCapacity - 1)) == 0,
+                  "kVizCapacity must be a power of two");
+    for (uint32_t i = 0; i < frame_count; ++i) {
+        float mono = 0.0f;
+        for (uint16_t c = 0; c < ch; ++c) mono += interleaved[i * ch + c];
+        mono /= ch;
+        viz_[(base + i) & mask] = mono;
+    }
+    viz_written_.store(base + frame_count, std::memory_order_release);
+}
+
+size_t AudioOutput::peek_viz(float* dst, size_t count) const {
+    const uint64_t total = viz_written_.load(std::memory_order_acquire);
+    if (total == 0 || count == 0) return 0;
+    const size_t available = total < kVizCapacity ? static_cast<size_t>(total) : kVizCapacity;
+    const size_t n = count < available ? count : available;
+    constexpr size_t mask = kVizCapacity - 1;
+    // Copy oldest-first so the caller sees samples in playback order.
+    const uint64_t start = total - n;
+    for (size_t i = 0; i < n; ++i) {
+        dst[i] = viz_[(start + i) & mask];
+    }
+    return n;
 }
 
 }  // namespace auralbit::audio

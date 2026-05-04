@@ -252,6 +252,147 @@ std::optional<std::string> Database::track_path(int64_t id) {
     return std::string(reinterpret_cast<const char*>(sqlite3_column_text(s, 0)));
 }
 
+std::vector<PlaylistAggregate> Database::all_playlists() {
+    std::vector<PlaylistAggregate> out;
+    Stmt s(db_,
+           "SELECT p.id, p.name, COUNT(pt.track_id) "
+           "FROM playlists p "
+           "LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id "
+           "GROUP BY p.id "
+           "ORDER BY LOWER(p.name)");
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        PlaylistAggregate p;
+        p.id = sqlite3_column_int64(s, 0);
+        if (auto* n = sqlite3_column_text(s, 1)) p.name = reinterpret_cast<const char*>(n);
+        p.track_count = sqlite3_column_int(s, 2);
+        out.push_back(std::move(p));
+    }
+    return out;
+}
+
+std::vector<TrackAggregate> Database::tracks_for_playlist(int64_t playlist_id) {
+    std::vector<TrackAggregate> out;
+    Stmt s(db_,
+           "SELECT t.id, COALESCE(t.album_id, 0), COALESCE(t.artist_id, 0), "
+           "       t.path, COALESCE(t.title, ''), COALESCE(t.track_no, 0), "
+           "       COALESCE(t.disc_no, 0), COALESCE(t.duration_ms, 0) "
+           "FROM playlist_tracks pt "
+           "JOIN tracks t ON t.id = pt.track_id "
+           "WHERE pt.playlist_id = ? "
+           "ORDER BY pt.position");
+    sqlite3_bind_int64(s, 1, playlist_id);
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        TrackAggregate t;
+        t.id = sqlite3_column_int64(s, 0);
+        t.album_id = sqlite3_column_int64(s, 1);
+        t.artist_id = sqlite3_column_int64(s, 2);
+        if (auto* p = sqlite3_column_text(s, 3)) t.path = reinterpret_cast<const char*>(p);
+        if (auto* tt = sqlite3_column_text(s, 4)) t.title = reinterpret_cast<const char*>(tt);
+        t.track_no = sqlite3_column_int(s, 5);
+        t.disc_no = sqlite3_column_int(s, 6);
+        t.duration_ms = sqlite3_column_int64(s, 7);
+        out.push_back(std::move(t));
+    }
+    return out;
+}
+
+int64_t Database::create_playlist(std::string_view name) {
+    if (name.empty()) return 0;
+    Stmt s(db_, "INSERT INTO playlists(name, created_at) VALUES (?, strftime('%s','now'))");
+    bind_text(s, 1, name);
+    if (sqlite3_step(s) != SQLITE_DONE) return 0;
+    return sqlite3_last_insert_rowid(db_);
+}
+
+bool Database::rename_playlist(int64_t id, std::string_view name) {
+    if (name.empty()) return false;
+    Stmt s(db_, "UPDATE playlists SET name = ? WHERE id = ?");
+    bind_text(s, 1, name);
+    sqlite3_bind_int64(s, 2, id);
+    return sqlite3_step(s) == SQLITE_DONE;
+}
+
+bool Database::delete_playlist(int64_t id) {
+    Stmt s(db_, "DELETE FROM playlists WHERE id = ?");
+    sqlite3_bind_int64(s, 1, id);
+    return sqlite3_step(s) == SQLITE_DONE;
+}
+
+bool Database::add_track_to_playlist(int64_t playlist_id, int64_t track_id) {
+    int next_pos = 0;
+    {
+        Stmt s(db_, "SELECT COALESCE(MAX(position), -1) + 1 "
+                    "FROM playlist_tracks WHERE playlist_id = ?");
+        sqlite3_bind_int64(s, 1, playlist_id);
+        if (sqlite3_step(s) == SQLITE_ROW) next_pos = sqlite3_column_int(s, 0);
+    }
+    Stmt ins(db_, "INSERT INTO playlist_tracks(playlist_id, track_id, position) "
+                  "VALUES (?, ?, ?)");
+    sqlite3_bind_int64(ins, 1, playlist_id);
+    sqlite3_bind_int64(ins, 2, track_id);
+    sqlite3_bind_int(ins, 3, next_pos);
+    return sqlite3_step(ins) == SQLITE_DONE;
+}
+
+bool Database::remove_track_from_playlist(int64_t playlist_id, int64_t track_id) {
+    Stmt s(db_, "DELETE FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?");
+    sqlite3_bind_int64(s, 1, playlist_id);
+    sqlite3_bind_int64(s, 2, track_id);
+    return sqlite3_step(s) == SQLITE_DONE;
+}
+
+bool Database::set_playlist_positions(int64_t playlist_id,
+                                      const std::vector<int64_t>& track_ids) {
+    if (sqlite3_exec(db_, "BEGIN", nullptr, nullptr, nullptr) != SQLITE_OK) return false;
+    {
+        Stmt del(db_, "DELETE FROM playlist_tracks WHERE playlist_id = ?");
+        sqlite3_bind_int64(del, 1, playlist_id);
+        if (sqlite3_step(del) != SQLITE_DONE) {
+            sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
+            return false;
+        }
+    }
+    Stmt ins(db_,
+             "INSERT INTO playlist_tracks(playlist_id, track_id, position) VALUES (?, ?, ?)");
+    for (size_t i = 0; i < track_ids.size(); ++i) {
+        sqlite3_reset(ins);
+        sqlite3_bind_int64(ins, 1, playlist_id);
+        sqlite3_bind_int64(ins, 2, track_ids[i]);
+        sqlite3_bind_int(ins, 3, static_cast<int>(i));
+        if (sqlite3_step(ins) != SQLITE_DONE) {
+            sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
+            return false;
+        }
+    }
+    return sqlite3_exec(db_, "COMMIT", nullptr, nullptr, nullptr) == SQLITE_OK;
+}
+
+std::optional<int64_t> Database::track_id_for_path(std::string_view path) {
+    Stmt s(db_, "SELECT id FROM tracks WHERE path = ?");
+    bind_text(s, 1, path);
+    if (sqlite3_step(s) != SQLITE_ROW) return std::nullopt;
+    return sqlite3_column_int64(s, 0);
+}
+
+std::vector<std::pair<int64_t, std::string>> Database::all_track_paths() {
+    std::vector<std::pair<int64_t, std::string>> out;
+    Stmt s(db_, "SELECT id, path FROM tracks");
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        const int64_t id = sqlite3_column_int64(s, 0);
+        std::string path;
+        if (auto* p = sqlite3_column_text(s, 1)) path = reinterpret_cast<const char*>(p);
+        out.emplace_back(id, std::move(path));
+    }
+    return out;
+}
+
+void Database::prune_orphans() {
+    exec("DELETE FROM albums "
+         "WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)");
+    exec("DELETE FROM artists "
+         "WHERE id NOT IN (SELECT DISTINCT artist_id FROM tracks WHERE artist_id IS NOT NULL)");
+}
+
 void Database::list_tracks(int limit, void (*cb)(const TrackRow&, void*), void* user) {
     Stmt s(db_,
            "SELECT t.id, t.path, t.mtime, t.size, COALESCE(t.title,''), "

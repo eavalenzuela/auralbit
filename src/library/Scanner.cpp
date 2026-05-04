@@ -17,6 +17,7 @@
 #include <taglib/tstring.h>
 #include <taglib/tvariant.h>
 
+#include "Charset.h"
 #include "Database.h"
 #include "sqlite/sqlite3.h"
 
@@ -154,9 +155,9 @@ ScanStats Scanner::scan(const std::string& root, ProgressFn on_progress) {
         rec.size = static_cast<int64_t>(file_size);
 
         const auto* tag = ref.tag();
-        rec.title = tag->title().to8Bit(true);
-        rec.artist = tag->artist().to8Bit(true);
-        rec.album = tag->album().to8Bit(true);
+        rec.title = charset::maybe_recover_cjk(tag->title().to8Bit(true));
+        rec.artist = charset::maybe_recover_cjk(tag->artist().to8Bit(true));
+        rec.album = charset::maybe_recover_cjk(tag->album().to8Bit(true));
         rec.year = static_cast<int>(tag->year());
         rec.track_no = static_cast<int>(tag->track());
 
@@ -195,6 +196,78 @@ ScanStats Scanner::scan(const std::string& root, ProgressFn on_progress) {
     }
 
     sqlite3_exec(db_.handle(), "COMMIT", nullptr, nullptr, nullptr);
+    return stats;
+}
+
+ScanStats Scanner::rescan_all(ProgressFn on_progress) {
+    ScanStats stats;
+    const auto rows = db_.all_track_paths();
+
+    sqlite3_exec(db_.handle(), "BEGIN", nullptr, nullptr, nullptr);
+
+    for (const auto& [id, path_str] : rows) {
+        ++stats.scanned;
+        std::error_code ec;
+        const fs::path p(path_str);
+        if (!fs::exists(p, ec) || !fs::is_regular_file(p, ec)) {
+            // Don't drop the row — the drive might just be unmounted.
+            ++stats.failed;
+            if (on_progress) on_progress(path_str, stats);
+            continue;
+        }
+        const auto file_size = fs::file_size(p, ec);
+        const auto mtime = fs::last_write_time(p, ec);
+        const int64_t mtime_ns =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(mtime.time_since_epoch())
+                .count();
+
+        TagLib::FileRef ref(path_str.c_str(), true, TagLib::AudioProperties::Average);
+        if (ref.isNull() || !ref.tag()) {
+            ++stats.failed;
+            if (on_progress) on_progress(path_str, stats);
+            continue;
+        }
+
+        ScanRecord rec;
+        rec.path = path_str;
+        rec.mtime = mtime_ns;
+        rec.size = static_cast<int64_t>(file_size);
+
+        const auto* tag = ref.tag();
+        rec.title = charset::maybe_recover_cjk(tag->title().to8Bit(true));
+        rec.artist = charset::maybe_recover_cjk(tag->artist().to8Bit(true));
+        rec.album = charset::maybe_recover_cjk(tag->album().to8Bit(true));
+        rec.year = static_cast<int>(tag->year());
+        rec.track_no = static_cast<int>(tag->track());
+
+        const auto props = ref.properties();
+        if (props.contains("DISCNUMBER")) {
+            const auto& list = props["DISCNUMBER"];
+            if (!list.isEmpty()) {
+                rec.disc_no = std::atoi(list.front().to8Bit(true).c_str());
+            }
+        }
+
+        if (const auto* ap = ref.audioProperties()) {
+            rec.duration_ms = ap->lengthInMilliseconds();
+            rec.bitrate = ap->bitrate();
+            rec.sample_rate = ap->sampleRate();
+            rec.channels = ap->channels();
+        }
+
+        if (!rec.album.empty()) {
+            const std::string album_key = rec.artist + "|" + rec.album;
+            rec.cover_path = extract_cover(ref, cover_cache_dir_, album_key);
+        }
+
+        if (db_.upsert_track(rec)) ++stats.updated;
+        else                       ++stats.failed;
+
+        if (on_progress) on_progress(path_str, stats);
+    }
+
+    sqlite3_exec(db_.handle(), "COMMIT", nullptr, nullptr, nullptr);
+    db_.prune_orphans();
     return stats;
 }
 

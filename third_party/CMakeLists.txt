@@ -7,6 +7,7 @@ add_library(auralbit_thirdparty STATIC
     dr_libs_impl.c
     stb_vorbis_impl.c
     sqlite/sqlite3.c
+    kissfft_impl.c
 )
 
 # SQLite tunables — disable features we won't use to shrink the binary.

@@ -27,6 +27,12 @@ struct TrackRow {
     int channels = 0;
 };
 
+struct PlaylistAggregate {
+    int64_t id = 0;
+    std::string name;
+    int track_count = 0;
+};
+
 struct ArtistAggregate {
     int64_t id = 0;
     std::string name;
@@ -110,6 +116,31 @@ public:
 
     // Lookup the on-disk path of a track by id (used to load into the Player).
     std::optional<std::string> track_path(int64_t id);
+
+    // ---- Playlists ----
+    std::vector<PlaylistAggregate> all_playlists();
+    std::vector<TrackAggregate> tracks_for_playlist(int64_t playlist_id);
+
+    // Returns the new playlist id, or 0 on failure (e.g. duplicate name).
+    int64_t create_playlist(std::string_view name);
+    bool rename_playlist(int64_t id, std::string_view name);
+    bool delete_playlist(int64_t id);
+
+    // Appends a track at the end of the playlist (next available position).
+    bool add_track_to_playlist(int64_t playlist_id, int64_t track_id);
+    bool remove_track_from_playlist(int64_t playlist_id, int64_t track_id);
+
+    // Replaces the playlist's track ordering with the given sequence.
+    bool set_playlist_positions(int64_t playlist_id, const std::vector<int64_t>& track_ids);
+
+    // Path → track id lookup (for M3U/PLS import).
+    std::optional<int64_t> track_id_for_path(std::string_view path);
+
+    // All tracks as (id, path). Used by the rescan flow.
+    std::vector<std::pair<int64_t, std::string>> all_track_paths();
+
+    // Drops any artists/albums with zero remaining tracks.
+    void prune_orphans();
 
     sqlite3* handle() { return db_; }
 

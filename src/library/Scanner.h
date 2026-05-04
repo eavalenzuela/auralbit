@@ -26,6 +26,13 @@ public:
     // Calls `on_progress` (if set) once per file. Returns final stats.
     ScanStats scan(const std::string& root, ProgressFn on_progress = {});
 
+    // Re-reads tags for every track already in the DB and upserts in place.
+    // Useful for picking up code changes (e.g. CP932 mojibake recovery) without
+    // requiring users to wipe and re-add their library. Skips files that have
+    // gone missing rather than deleting them, since an unmounted drive
+    // shouldn't lose its catalog. Calls prune_orphans() at the end.
+    ScanStats rescan_all(ProgressFn on_progress = {});
+
     // Default cache dir: $XDG_CACHE_HOME/auralbit/covers (created on first use).
     static std::string default_cover_cache_dir();
 
