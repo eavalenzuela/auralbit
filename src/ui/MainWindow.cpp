@@ -25,9 +25,11 @@
 #include "PlaylistsModel.h"
 #include "TransportBar.h"
 #include "audio/Player.h"
+#include "SyncDialog.h"
 #include "library/Database.h"
 #include "library/PlaylistIO.h"
 #include "library/Scanner.h"
+#include "sync/MountedFsTarget.h"
 
 #include <QInputDialog>
 #include <QMessageBox>
@@ -619,6 +621,19 @@ void MainWindow::onPlaylistsContextMenu(const QPoint& pos) {
                 }
                 db_->delete_playlist(entity_id);
                 reloadPlaylists();
+            });
+
+            auto* syncAction = menu.addAction("Sync to…");
+            connect(syncAction, &QAction::triggered, this, [this, entity_id, idx] {
+                const QString dir = QFileDialog::getExistingDirectory(
+                    this, "Sync to (target folder)", QString(),
+                    QFileDialog::ShowDirsOnly);
+                if (dir.isEmpty()) return;
+                auto target = std::make_unique<sync::MountedFsTarget>(dir.toStdString());
+                const QString name = idx.data(Qt::DisplayRole).toString();
+                auto* dlg = new SyncDialog(*db_, std::move(target), entity_id, name, this);
+                dlg->setAttribute(Qt::WA_DeleteOnClose);
+                dlg->show();
             });
 
             auto* exportAction = menu.addAction("Export…");

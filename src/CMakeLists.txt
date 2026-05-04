@@ -57,6 +57,13 @@ qt_add_executable(auralbit
     ui/PlaylistsModel.h
     ui/TransportBar.cpp
     ui/TransportBar.h
+    ui/SyncDialog.cpp
+    ui/SyncDialog.h
+    sync/SyncTarget.h
+    sync/MountedFsTarget.cpp
+    sync/MountedFsTarget.h
+    sync/PlaylistSyncer.cpp
+    sync/PlaylistSyncer.h
     visualizer/Visualizer.cpp
     visualizer/Visualizer.h
     ${CMAKE_SOURCE_DIR}/resources/auralbit.qrc
