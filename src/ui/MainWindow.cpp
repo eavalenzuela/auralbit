@@ -1,42 +1,89 @@
 #include "MainWindow.h"
 
+#include <thread>
+
+#include <QAction>
+#include <QApplication>
 #include <QCloseEvent>
+#include <QFileDialog>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
+#include <QMetaObject>
 #include <QScreen>
 #include <QSettings>
-#include <QStandardItemModel>
+#include <QStatusBar>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include "LibraryModel.h"
 #include "LibraryTree.h"
 #include "TransportBar.h"
+#include "audio/Player.h"
+#include "library/Database.h"
+#include "library/Scanner.h"
 
 namespace auralbit::ui {
 
 namespace {
 constexpr const char* kGeomKey = "window/geometry";
 constexpr const char* kStateKey = "window/state";
+
+// QTabBar that distributes the available width equally across all tabs.
+// Native QTabBar packs tabs to the left at their content width, which leaves
+// dead space when there are only a few tabs in a wide window.
+class EquallyDividedTabBar : public QTabBar {
+public:
+    using QTabBar::QTabBar;
+
+protected:
+    QSize tabSizeHint(int index) const override {
+        const QSize base = QTabBar::tabSizeHint(index);
+        const QWidget* p = parentWidget();
+        if (p && count() > 0 && p->width() > 0) {
+            return QSize(p->width() / count(), base.height());
+        }
+        return base;
+    }
+};
+
+// QTabWidget exposes setTabBar() only to subclasses, so this trivial wrapper
+// installs our equally-divided tab bar at construction time.
+class EquallyDividedTabWidget : public QTabWidget {
+public:
+    explicit EquallyDividedTabWidget(QWidget* parent = nullptr) : QTabWidget(parent) {
+        setTabBar(new EquallyDividedTabBar());
+    }
+};
 }  // namespace
 
-MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
+MainWindow::MainWindow(QWidget* parent)
+    : QMainWindow(parent),
+      db_(std::make_unique<library::Database>()),
+      player_(std::make_unique<audio::Player>()) {
     setWindowTitle("auralbit");
+
+    if (!db_->open(library::Database::default_path())) {
+        // Fatal — we have nowhere to store the library.
+        qFatal("auralbit: cannot open library database");
+    }
 
     auto* central = new QWidget(this);
     auto* root = new QVBoxLayout(central);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
 
-    auto* tabs = new QTabWidget(central);
+    auto* tabs = new EquallyDividedTabWidget(central);
     tabs->setDocumentMode(true);
     tabs->setTabPosition(QTabWidget::North);
 
     auto* libraryPage = new QWidget(tabs);
     buildLibraryTab(libraryPage);
-    tabs->addTab(libraryPage, "Library  1,284");
+    tabs->addTab(libraryPage, "Library");
 
     auto* playlistsPage = new QWidget(tabs);
     auto* placeholder = new QVBoxLayout(playlistsPage);
@@ -46,26 +93,27 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     lbl->setStyleSheet("color: #6f717a;");
     placeholder->addWidget(lbl);
     placeholder->addStretch();
-    tabs->addTab(playlistsPage, "Playlists  0");
+    tabs->addTab(playlistsPage, "Playlists");
 
     root->addWidget(tabs, 1);
 
     transport_ = new TransportBar(central);
-    transport_->setFormatChips("FLAC", "44.1");
     root->addWidget(transport_);
 
     setCentralWidget(central);
 
-    // Demo: tick the progress wash across the highlighted row so the visual
-    // is alive when reviewing. Replaced with real Player position in Phase 6.
-    demo_timer_ = new QTimer(this);
-    demo_timer_->setInterval(120);
-    connect(demo_timer_, &QTimer::timeout, this, [this] {
-        demo_progress_ += 0.005;
-        if (demo_progress_ > 1.0) demo_progress_ = 0.0;
-        tree_->setProgress(demo_progress_);
-    });
-    demo_timer_->start();
+    status_ = statusBar();
+    status_->setSizeGripEnabled(false);
+
+    reloadLibrary();
+
+    progress_timer_ = new QTimer(this);
+    progress_timer_->setInterval(100);
+    connect(progress_timer_, &QTimer::timeout, this, &MainWindow::onPositionTick);
+    progress_timer_->start();
+
+    connect(transport_, &TransportBar::playPauseClicked, this, &MainWindow::onPlayPauseClicked);
+    // prev/next get queue logic in Phase 4; for now they're inert.
 
     restoreGeometry();
 }
@@ -102,109 +150,130 @@ void MainWindow::buildLibraryTab(QWidget* parent) {
     tree_->setUniformRowHeights(true);
     tree_->setIndentation(14);
     tree_->setAnimated(false);
-    tree_->setExpandsOnDoubleClick(true);
+    tree_->setExpandsOnDoubleClick(false);  // double-click plays instead.
     tree_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     tree_->setSelectionBehavior(QAbstractItemView::SelectRows);
     tree_->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    tree_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    tree_->setContextMenuPolicy(Qt::CustomContextMenu);
 
-    model_ = new QStandardItemModel(tree_);
-    model_->setColumnCount(2);
+    model_ = new LibraryModel(tree_);
     tree_->setModel(model_);
-    tree_->header()->setStretchLastSection(false);
-    tree_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-    tree_->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
 
-    populatePlaceholderModel();
+    connect(tree_, &QTreeView::doubleClicked, this, &MainWindow::onTrackActivated);
+    connect(tree_, &QTreeView::customContextMenuRequested, this,
+            &MainWindow::onTreeContextMenu);
+
     layout->addWidget(tree_, 1);
 }
 
-void MainWindow::populatePlaceholderModel() {
-    struct AlbumStub { const char* name; int track_count; };
-    struct ArtistStub {
-        const char* name;
-        std::vector<AlbumStub> albums;
-    };
+void MainWindow::onTreeContextMenu(const QPoint& pos) {
+    QMenu menu(this);
 
-    const std::vector<ArtistStub> demo = {
-        {"Aphex Twin", {{"Selected Ambient Works 85–92", 12}, {"Drukqs", 30}}},
-        {"Boards of Canada",
-         {{"Music Has the Right to Children", 17}, {"Geogaddi", 23}}},
-        {"Burial", {}},
-        {"Caribou", {}},
-        {"Four Tet", {{"Rounds", 10}, {"There Is Love in You", 9}}},
-        {"Mount Kimbie", {}},
-        {"Nils Frahm", {}},
-        {"Oneohtrix Point Never", {}},
-    };
-
-    auto rightAlign = [](QStandardItem* it) {
-        it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        it->setForeground(QBrush(QColor("#6f717a")));
-    };
-
-    for (const auto& a : demo) {
-        auto* artistItem = new QStandardItem(a.name);
-        artistItem->setForeground(QBrush(QColor("#e6e6e6")));
-        QStandardItem* artistRight = new QStandardItem();
-        model_->appendRow({artistItem, artistRight});
-
-        for (const auto& al : a.albums) {
-            auto* albumItem = new QStandardItem(al.name);
-            albumItem->setForeground(QBrush(QColor("#d8dade")));
-            auto* albumRight = new QStandardItem(QString::number(al.track_count));
-            rightAlign(albumRight);
-            artistItem->appendRow({albumItem, albumRight});
-        }
+    const QModelIndex idx = tree_->indexAt(pos);
+    if (idx.isValid() &&
+        idx.data(roles::Kind).toInt() == static_cast<int>(RowKind::Track)) {
+        auto* playAction = menu.addAction("Play");
+        connect(playAction, &QAction::triggered, this,
+                [this, idx] { onTrackActivated(idx); });
+        menu.addSeparator();
     }
 
-    if (auto* boc = model_->findItems("Boards of Canada").value(0, nullptr)) {
-        tree_->expand(boc->index());
-        for (int r = 0; r < boc->rowCount(); ++r) {
-            auto* album = boc->child(r);
-            if (album && album->text() == "Geogaddi") {
-                tree_->expand(album->index());
+    auto* addAction = menu.addAction("Add Folder…");
+    connect(addAction, &QAction::triggered, this, &MainWindow::onAddFolder);
 
-                struct TrackStub { const char* name; const char* time; bool current; };
-                const TrackStub tracks[] = {
-                    {"Music Is Math", "3:48", true},
-                    {"Beware the Friendly Stranger", "0:38", false},
-                    {"Gyroscope", "3:34", false},
-                    {"Dandelion", "1:09", false},
-                    {"Sunshine Recorder", "6:11", false},
-                    {"In the Annexe", "1:21", false},
-                    {"Julie and Candy", "5:30", false},
-                };
-                for (const auto& t : tracks) {
-                    auto* trackItem = new QStandardItem(t.name);
-                    auto* timeItem = new QStandardItem(t.time);
-                    timeItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-                    if (t.current) {
-                        trackItem->setForeground(QBrush(QColor("#e8a85c")));
-                        timeItem->setForeground(QBrush(QColor("#e8a85c")));
-                        trackItem->setText(QString("♪  ") + t.name);
-                    } else {
-                        trackItem->setForeground(QBrush(QColor("#c8cad0")));
-                        timeItem->setForeground(QBrush(QColor("#7a7c84")));
-                    }
-                    album->appendRow({trackItem, timeItem});
-                    if (t.current) {
-                        demo_track_index_ = trackItem->index();
-                    }
-                }
-            }
-        }
+    menu.exec(tree_->viewport()->mapToGlobal(pos));
+}
+
+void MainWindow::reloadLibrary() {
+    model_->reload(*db_);
+    // QStandardItemModel::clear() resets QHeaderView resize modes to Interactive,
+    // which collapses column 0 to its content width. Re-apply after every reload.
+    tree_->header()->setStretchLastSection(false);
+    tree_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    tree_->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    refreshHeaderLabel();
+}
+
+void MainWindow::refreshHeaderLabel() {
+    header_label_->setText(QString("LIBRARY · %1 TRACKS · %2 ARTISTS")
+                               .arg(model_->trackCount())
+                               .arg(model_->artistCount()));
+}
+
+void MainWindow::onAddFolder() {
+    const QString dir = QFileDialog::getExistingDirectory(
+        this, "Add folder to library", QString(), QFileDialog::ShowDirsOnly);
+    if (dir.isEmpty()) return;
+
+    status_->showMessage("Scanning " + dir + "…");
+
+    // Background scan with its own DB connection (SQLite is single-threaded
+    // per connection, so we don't share with the UI thread's connection).
+    std::thread([this, dir = dir.toStdString()] {
+        library::Database scanDb;
+        if (!scanDb.open(library::Database::default_path())) return;
+        library::Scanner scanner(scanDb, library::Scanner::default_cover_cache_dir());
+        scanner.scan(dir);
+        QMetaObject::invokeMethod(this, "onScanFinished", Qt::QueuedConnection);
+    }).detach();
+}
+
+void MainWindow::onScanFinished() {
+    reloadLibrary();
+    status_->showMessage(
+        QString("Library: %1 tracks").arg(model_->trackCount()), 3000);
+}
+
+void MainWindow::onTrackActivated(const QModelIndex& index) {
+    if (!index.isValid()) return;
+    if (index.data(roles::Kind).toInt() != static_cast<int>(RowKind::Track)) {
+        // Toggle expansion on artist/album rows.
+        tree_->setExpanded(index, !tree_->isExpanded(index));
+        return;
     }
+    const QString path = index.data(roles::TrackPath).toString();
+    if (path.isEmpty()) return;
 
-    if (demo_track_index_.isValid()) {
-        tree_->setCurrentTrack(demo_track_index_);
-        tree_->setProgress(0.45);
+    if (!player_->load(path.toStdString())) {
+        status_->showMessage("Failed to load: " + path, 4000);
+        return;
     }
+    player_->play();
+    current_track_ = QPersistentModelIndex(index.sibling(index.row(), 0));
+    tree_->setCurrentTrack(current_track_);
+    tree_->setProgress(0.0);
 
-    header_label_->setText("LIBRARY · 1,284 TRACKS · 87 ARTISTS");
+    // Drop the selection so the red progress wash isn't covered by the
+    // selection highlight on the same row. Clicking the row again will
+    // re-select and temporarily hide the wash, by design.
+    tree_->selectionModel()->clearSelection();
+
+    const auto fmt = path.section('.', -1).toUpper();
+    transport_->setFormatChips(fmt, "—");
+}
+
+void MainWindow::onPlayPauseClicked() {
+    using audio::PlayerState;
+    switch (player_->state()) {
+        case PlayerState::Playing: player_->pause(); break;
+        case PlayerState::Paused:  player_->play(); break;
+        case PlayerState::Stopped: /* nothing loaded */ break;
+    }
+}
+
+void MainWindow::onPositionTick() {
+    const double dur = player_->duration_seconds();
+    if (dur <= 0) {
+        tree_->setProgress(0.0);
+        return;
+    }
+    tree_->setProgress(player_->position_seconds() / dur);
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
     persistGeometry();
+    if (player_) player_->stop();
     QMainWindow::closeEvent(event);
 }
 

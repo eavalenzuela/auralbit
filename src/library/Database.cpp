@@ -172,6 +172,86 @@ int64_t Database::track_count() {
     return sqlite3_column_int64(s, 0);
 }
 
+int64_t Database::artist_count() {
+    Stmt s(db_,
+           "SELECT COUNT(DISTINCT artist_id) FROM tracks WHERE artist_id IS NOT NULL");
+    if (sqlite3_step(s) != SQLITE_ROW) return 0;
+    return sqlite3_column_int64(s, 0);
+}
+
+std::vector<ArtistAggregate> Database::all_artists() {
+    std::vector<ArtistAggregate> out;
+    Stmt s(db_,
+           "SELECT ar.id, ar.name, COUNT(t.id) "
+           "FROM artists ar "
+           "LEFT JOIN tracks t ON t.artist_id = ar.id "
+           "GROUP BY ar.id "
+           "HAVING COUNT(t.id) > 0 "
+           "ORDER BY LOWER(ar.name)");
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        ArtistAggregate a;
+        a.id = sqlite3_column_int64(s, 0);
+        if (auto* n = sqlite3_column_text(s, 1)) a.name = reinterpret_cast<const char*>(n);
+        a.track_count = sqlite3_column_int(s, 2);
+        out.push_back(std::move(a));
+    }
+    return out;
+}
+
+std::vector<AlbumAggregate> Database::albums_for_artist(int64_t artist_id) {
+    std::vector<AlbumAggregate> out;
+    Stmt s(db_,
+           "SELECT al.id, al.name, COALESCE(al.year, 0), COALESCE(al.cover_path, ''), "
+           "       COUNT(t.id) "
+           "FROM albums al "
+           "LEFT JOIN tracks t ON t.album_id = al.id "
+           "WHERE al.artist_id = ? "
+           "GROUP BY al.id "
+           "ORDER BY al.year, LOWER(al.name)");
+    sqlite3_bind_int64(s, 1, artist_id);
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        AlbumAggregate a;
+        a.id = sqlite3_column_int64(s, 0);
+        a.artist_id = artist_id;
+        if (auto* n = sqlite3_column_text(s, 1)) a.name = reinterpret_cast<const char*>(n);
+        a.year = sqlite3_column_int(s, 2);
+        if (auto* c = sqlite3_column_text(s, 3)) a.cover_path = reinterpret_cast<const char*>(c);
+        a.track_count = sqlite3_column_int(s, 4);
+        out.push_back(std::move(a));
+    }
+    return out;
+}
+
+std::vector<TrackAggregate> Database::tracks_for_album(int64_t album_id) {
+    std::vector<TrackAggregate> out;
+    Stmt s(db_,
+           "SELECT id, COALESCE(artist_id, 0), path, COALESCE(title, ''), "
+           "       COALESCE(track_no, 0), COALESCE(disc_no, 0), COALESCE(duration_ms, 0) "
+           "FROM tracks WHERE album_id = ? "
+           "ORDER BY COALESCE(disc_no, 0), COALESCE(track_no, 0), LOWER(COALESCE(title, ''))");
+    sqlite3_bind_int64(s, 1, album_id);
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        TrackAggregate t;
+        t.id = sqlite3_column_int64(s, 0);
+        t.album_id = album_id;
+        t.artist_id = sqlite3_column_int64(s, 1);
+        if (auto* p = sqlite3_column_text(s, 2)) t.path = reinterpret_cast<const char*>(p);
+        if (auto* tt = sqlite3_column_text(s, 3)) t.title = reinterpret_cast<const char*>(tt);
+        t.track_no = sqlite3_column_int(s, 4);
+        t.disc_no = sqlite3_column_int(s, 5);
+        t.duration_ms = sqlite3_column_int64(s, 6);
+        out.push_back(std::move(t));
+    }
+    return out;
+}
+
+std::optional<std::string> Database::track_path(int64_t id) {
+    Stmt s(db_, "SELECT path FROM tracks WHERE id = ?");
+    sqlite3_bind_int64(s, 1, id);
+    if (sqlite3_step(s) != SQLITE_ROW) return std::nullopt;
+    return std::string(reinterpret_cast<const char*>(sqlite3_column_text(s, 0)));
+}
+
 void Database::list_tracks(int limit, void (*cb)(const TrackRow&, void*), void* user) {
     Stmt s(db_,
            "SELECT t.id, t.path, t.mtime, t.size, COALESCE(t.title,''), "

@@ -45,6 +45,8 @@ qt_add_executable(auralbit
     main.cpp
     ui/MainWindow.cpp
     ui/MainWindow.h
+    ui/LibraryModel.cpp
+    ui/LibraryModel.h
     ui/LibraryTree.cpp
     ui/LibraryTree.h
     ui/TransportBar.cpp

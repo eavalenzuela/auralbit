@@ -4,6 +4,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 struct sqlite3;
 struct sqlite3_stmt;
@@ -24,6 +25,32 @@ struct TrackRow {
     int bitrate = 0;
     int sample_rate = 0;
     int channels = 0;
+};
+
+struct ArtistAggregate {
+    int64_t id = 0;
+    std::string name;
+    int track_count = 0;
+};
+
+struct AlbumAggregate {
+    int64_t id = 0;
+    int64_t artist_id = 0;
+    std::string name;
+    int year = 0;
+    std::string cover_path;
+    int track_count = 0;
+};
+
+struct TrackAggregate {
+    int64_t id = 0;
+    int64_t album_id = 0;
+    int64_t artist_id = 0;
+    std::string path;
+    std::string title;
+    int track_no = 0;
+    int disc_no = 0;
+    int64_t duration_ms = 0;
 };
 
 struct ScanRecord {
@@ -71,9 +98,18 @@ public:
 
     // Total row count (debug/CLI).
     int64_t track_count();
+    int64_t artist_count();
 
     // Run a callback for the first N tracks (debug/CLI).
     void list_tracks(int limit, void (*cb)(const TrackRow&, void*), void* user);
+
+    // Tree-building queries: return entire library sorted alphabetically.
+    std::vector<ArtistAggregate> all_artists();
+    std::vector<AlbumAggregate> albums_for_artist(int64_t artist_id);
+    std::vector<TrackAggregate> tracks_for_album(int64_t album_id);
+
+    // Lookup the on-disk path of a track by id (used to load into the Player).
+    std::optional<std::string> track_path(int64_t id);
 
     sqlite3* handle() { return db_; }
 

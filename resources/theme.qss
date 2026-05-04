@@ -149,6 +149,35 @@ QLabel.chip[accent="true"] {
     color: #e8a85c;
 }
 
+/* ---------------- Context menus ---------------- */
+
+QMenu {
+    background: #26282f;
+    border: 1px solid #3a3c45;
+    padding: 4px 0;
+    color: #d8dade;
+}
+
+QMenu::item {
+    padding: 6px 18px;
+    background: transparent;
+}
+
+QMenu::item:selected {
+    background: #33353d;
+    color: #ffffff;
+}
+
+QMenu::item:disabled {
+    color: #6f717a;
+}
+
+QMenu::separator {
+    height: 1px;
+    background: #2e3038;
+    margin: 4px 8px;
+}
+
 /* ---------------- Scrollbars ---------------- */
 
 QScrollBar:vertical {

@@ -2,14 +2,19 @@
 
 #include <QMainWindow>
 #include <QPersistentModelIndex>
+#include <memory>
 
 class QLineEdit;
 class QLabel;
-class QStandardItemModel;
+class QStatusBar;
 class QTimer;
+
+namespace auralbit::audio { class Player; }
+namespace auralbit::library { class Database; }
 
 namespace auralbit::ui {
 
+class LibraryModel;
 class LibraryTree;
 class TransportBar;
 
@@ -22,21 +27,33 @@ public:
 protected:
     void closeEvent(QCloseEvent* event) override;
 
+private slots:
+    void onAddFolder();
+    void onTrackActivated(const QModelIndex& index);
+    void onPlayPauseClicked();
+    void onPositionTick();
+    void onScanFinished();
+    void onTreeContextMenu(const QPoint& pos);
+
 private:
     void buildLibraryTab(QWidget* parent);
-    void populatePlaceholderModel();
+    void refreshHeaderLabel();
+    void reloadLibrary();
     void restoreGeometry();
     void persistGeometry();
+
+    std::unique_ptr<library::Database> db_;
+    std::unique_ptr<audio::Player> player_;
 
     QLabel* header_label_ = nullptr;
     QLineEdit* filter_edit_ = nullptr;
     LibraryTree* tree_ = nullptr;
-    QStandardItemModel* model_ = nullptr;
+    LibraryModel* model_ = nullptr;
     TransportBar* transport_ = nullptr;
+    QStatusBar* status_ = nullptr;
+    QTimer* progress_timer_ = nullptr;
 
-    QPersistentModelIndex demo_track_index_;
-    QTimer* demo_timer_ = nullptr;
-    double demo_progress_ = 0.0;
+    QPersistentModelIndex current_track_;
 };
 
 }  // namespace auralbit::ui
