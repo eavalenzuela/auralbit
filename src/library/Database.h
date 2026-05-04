@@ -1,0 +1,89 @@
+#pragma once
+
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <string_view>
+
+struct sqlite3;
+struct sqlite3_stmt;
+
+namespace auralbit::library {
+
+struct TrackRow {
+    int64_t id = 0;
+    std::string path;
+    int64_t mtime = 0;
+    int64_t size = 0;
+    std::string title;
+    std::string artist;  // Resolved from artists table.
+    std::string album;   // Resolved from albums table.
+    int track_no = 0;
+    int disc_no = 0;
+    int64_t duration_ms = 0;
+    int bitrate = 0;
+    int sample_rate = 0;
+    int channels = 0;
+};
+
+struct ScanRecord {
+    std::string path;
+    int64_t mtime = 0;
+    int64_t size = 0;
+    std::string title;
+    std::string artist;
+    std::string album;
+    int year = 0;
+    int track_no = 0;
+    int disc_no = 0;
+    int64_t duration_ms = 0;
+    int bitrate = 0;
+    int sample_rate = 0;
+    int channels = 0;
+    std::string cover_path;  // Optional; written to albums.cover_path if non-empty.
+};
+
+class Database {
+public:
+    Database();
+    ~Database();
+
+    Database(const Database&) = delete;
+    Database& operator=(const Database&) = delete;
+
+    // Opens the DB file, applying migrations. Returns false on failure.
+    bool open(const std::string& path);
+    void close();
+
+    // Default location: ~/.local/share/auralbit/library.db. Creates the dir.
+    static std::string default_path();
+
+    // Returns existing track id and (mtime,size) so the scanner can decide to skip.
+    struct ExistingTrack {
+        int64_t id;
+        int64_t mtime;
+        int64_t size;
+    };
+    std::optional<ExistingTrack> find_track(std::string_view path);
+
+    // Inserts or updates a track. Resolves artist/album lookups, creating rows as needed.
+    bool upsert_track(const ScanRecord& r);
+
+    // Total row count (debug/CLI).
+    int64_t track_count();
+
+    // Run a callback for the first N tracks (debug/CLI).
+    void list_tracks(int limit, void (*cb)(const TrackRow&, void*), void* user);
+
+    sqlite3* handle() { return db_; }
+
+private:
+    bool exec(const char* sql);
+    int64_t upsert_artist(std::string_view name);
+    int64_t upsert_album(std::string_view name, int64_t artist_id, int year,
+                         std::string_view cover_path);
+
+    sqlite3* db_ = nullptr;
+};
+
+}  // namespace auralbit::library
