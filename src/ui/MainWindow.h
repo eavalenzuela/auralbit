@@ -2,7 +2,9 @@
 
 #include <QMainWindow>
 #include <QPersistentModelIndex>
+#include <cstdint>
 #include <memory>
+#include <vector>
 
 class QLineEdit;
 class QLabel;
@@ -31,12 +33,19 @@ private slots:
     void onAddFolder();
     void onTrackActivated(const QModelIndex& index);
     void onPlayPauseClicked();
+    void onPrevClicked();
+    void onNextClicked();
     void onPositionTick();
     void onScanFinished();
     void onTreeContextMenu(const QPoint& pos);
 
 private:
     void buildLibraryTab(QWidget* parent);
+    void playAlbumFromTrack(int64_t album_id, int64_t start_track_id);
+    void playAlbum(int64_t album_id);
+    void playArtist(int64_t artist_id);
+    void playQueueAt(int index);
+    void loadCurrent();
     void refreshHeaderLabel();
     void reloadLibrary();
     void restoreGeometry();
@@ -54,6 +63,10 @@ private:
     QTimer* progress_timer_ = nullptr;
 
     QPersistentModelIndex current_track_;
+
+    std::vector<int64_t> queue_;
+    int queue_index_ = -1;
+    bool was_playing_ = false;  // Tracks state at last tick for EOF detection.
 };
 
 }  // namespace auralbit::ui

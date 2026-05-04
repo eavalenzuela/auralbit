@@ -113,7 +113,8 @@ MainWindow::MainWindow(QWidget* parent)
     progress_timer_->start();
 
     connect(transport_, &TransportBar::playPauseClicked, this, &MainWindow::onPlayPauseClicked);
-    // prev/next get queue logic in Phase 4; for now they're inert.
+    connect(transport_, &TransportBar::prevClicked, this, &MainWindow::onPrevClicked);
+    connect(transport_, &TransportBar::nextClicked, this, &MainWindow::onNextClicked);
 
     restoreGeometry();
 }
@@ -171,11 +172,20 @@ void MainWindow::onTreeContextMenu(const QPoint& pos) {
     QMenu menu(this);
 
     const QModelIndex idx = tree_->indexAt(pos);
-    if (idx.isValid() &&
-        idx.data(roles::Kind).toInt() == static_cast<int>(RowKind::Track)) {
+    if (idx.isValid()) {
+        const int kind = idx.data(roles::Kind).toInt();
+        const int64_t entity_id = idx.data(roles::EntityId).toLongLong();
         auto* playAction = menu.addAction("Play");
-        connect(playAction, &QAction::triggered, this,
-                [this, idx] { onTrackActivated(idx); });
+        if (kind == static_cast<int>(RowKind::Track)) {
+            connect(playAction, &QAction::triggered, this,
+                    [this, idx] { onTrackActivated(idx); });
+        } else if (kind == static_cast<int>(RowKind::Album)) {
+            connect(playAction, &QAction::triggered, this,
+                    [this, entity_id] { playAlbum(entity_id); });
+        } else if (kind == static_cast<int>(RowKind::Artist)) {
+            connect(playAction, &QAction::triggered, this,
+                    [this, entity_id] { playArtist(entity_id); });
+        }
         menu.addSeparator();
     }
 
@@ -227,26 +237,84 @@ void MainWindow::onScanFinished() {
 
 void MainWindow::onTrackActivated(const QModelIndex& index) {
     if (!index.isValid()) return;
-    if (index.data(roles::Kind).toInt() != static_cast<int>(RowKind::Track)) {
+
+    const int kind = index.data(roles::Kind).toInt();
+    if (kind != static_cast<int>(RowKind::Track)) {
         // Toggle expansion on artist/album rows.
         tree_->setExpanded(index, !tree_->isExpanded(index));
         return;
     }
-    const QString path = index.data(roles::TrackPath).toString();
-    if (path.isEmpty()) return;
+
+    // Walk up to the album to enqueue the whole album starting from this track.
+    const QModelIndex album_idx = index.parent();
+    if (!album_idx.isValid()) return;
+    const int64_t album_id = album_idx.data(roles::EntityId).toLongLong();
+    const int64_t track_id = index.data(roles::EntityId).toLongLong();
+    playAlbumFromTrack(album_id, track_id);
+}
+
+void MainWindow::playAlbumFromTrack(int64_t album_id, int64_t start_track_id) {
+    const auto tracks = db_->tracks_for_album(album_id);
+    if (tracks.empty()) return;
+
+    queue_.clear();
+    int start = 0;
+    for (size_t i = 0; i < tracks.size(); ++i) {
+        queue_.push_back(tracks[i].id);
+        if (tracks[i].id == start_track_id) start = static_cast<int>(i);
+    }
+    playQueueAt(start);
+}
+
+void MainWindow::playAlbum(int64_t album_id) {
+    const auto tracks = db_->tracks_for_album(album_id);
+    if (tracks.empty()) return;
+    queue_.clear();
+    for (const auto& t : tracks) queue_.push_back(t.id);
+    playQueueAt(0);
+}
+
+void MainWindow::playArtist(int64_t artist_id) {
+    queue_.clear();
+    for (const auto& al : db_->albums_for_artist(artist_id)) {
+        for (const auto& t : db_->tracks_for_album(al.id)) {
+            queue_.push_back(t.id);
+        }
+    }
+    if (queue_.empty()) return;
+    playQueueAt(0);
+}
+
+void MainWindow::playQueueAt(int index) {
+    if (index < 0 || index >= static_cast<int>(queue_.size())) return;
+    queue_index_ = index;
+    loadCurrent();
+}
+
+void MainWindow::loadCurrent() {
+    if (queue_index_ < 0 || queue_index_ >= static_cast<int>(queue_.size())) return;
+    const int64_t id = queue_[queue_index_];
+    const auto path_opt = db_->track_path(id);
+    if (!path_opt) {
+        status_->showMessage("Track missing from DB", 3000);
+        return;
+    }
+    const QString path = QString::fromStdString(*path_opt);
 
     if (!player_->load(path.toStdString())) {
         status_->showMessage("Failed to load: " + path, 4000);
         return;
     }
     player_->play();
-    current_track_ = QPersistentModelIndex(index.sibling(index.row(), 0));
-    tree_->setCurrentTrack(current_track_);
-    tree_->setProgress(0.0);
+    was_playing_ = true;
 
-    // Drop the selection so the red progress wash isn't covered by the
-    // selection highlight on the same row. Clicking the row again will
-    // re-select and temporarily hide the wash, by design.
+    const QModelIndex idx = model_->indexForTrackId(id);
+    if (idx.isValid()) {
+        current_track_ = QPersistentModelIndex(idx);
+        tree_->setCurrentTrack(current_track_);
+        tree_->scrollTo(idx, QAbstractItemView::PositionAtCenter);
+    }
+    tree_->setProgress(0.0);
     tree_->selectionModel()->clearSelection();
 
     const auto fmt = path.section('.', -1).toUpper();
@@ -256,19 +324,43 @@ void MainWindow::onTrackActivated(const QModelIndex& index) {
 void MainWindow::onPlayPauseClicked() {
     using audio::PlayerState;
     switch (player_->state()) {
-        case PlayerState::Playing: player_->pause(); break;
-        case PlayerState::Paused:  player_->play(); break;
+        case PlayerState::Playing: player_->pause(); was_playing_ = false; break;
+        case PlayerState::Paused:  player_->play(); was_playing_ = true; break;
         case PlayerState::Stopped: /* nothing loaded */ break;
     }
 }
 
-void MainWindow::onPositionTick() {
-    const double dur = player_->duration_seconds();
-    if (dur <= 0) {
-        tree_->setProgress(0.0);
-        return;
+void MainWindow::onPrevClicked() {
+    if (queue_index_ > 0) {
+        --queue_index_;
+        loadCurrent();
     }
-    tree_->setProgress(player_->position_seconds() / dur);
+}
+
+void MainWindow::onNextClicked() {
+    if (queue_index_ + 1 < static_cast<int>(queue_.size())) {
+        ++queue_index_;
+        loadCurrent();
+    }
+}
+
+void MainWindow::onPositionTick() {
+    using audio::PlayerState;
+    const double dur = player_->duration_seconds();
+    if (dur > 0) {
+        tree_->setProgress(player_->position_seconds() / dur);
+    } else {
+        tree_->setProgress(0.0);
+    }
+
+    // Auto-advance: a track that was playing reaches EOF → Player goes Stopped.
+    if (was_playing_ && player_->state() == PlayerState::Stopped) {
+        was_playing_ = false;
+        if (queue_index_ + 1 < static_cast<int>(queue_.size())) {
+            ++queue_index_;
+            loadCurrent();
+        }
+    }
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
