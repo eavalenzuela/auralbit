@@ -15,6 +15,7 @@ constexpr int Kind = Qt::UserRole + 1;        // RowKind
 constexpr int EntityId = Qt::UserRole + 2;    // int64
 constexpr int TrackPath = Qt::UserRole + 3;   // QString
 constexpr int DurationMs = Qt::UserRole + 4;  // qlonglong
+constexpr int FilterText = Qt::UserRole + 5;  // QString — concat of qualified names.
 }  // namespace roles
 
 enum class RowKind { Artist, Album, Track, Playlist };

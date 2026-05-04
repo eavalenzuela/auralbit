@@ -62,6 +62,8 @@ qt_add_executable(auralbit
     sync/SyncTarget.h
     sync/MountedFsTarget.cpp
     sync/MountedFsTarget.h
+    sync/MtpTarget.cpp
+    sync/MtpTarget.h
     sync/PlaylistSyncer.cpp
     sync/PlaylistSyncer.h
     desktop/MprisAdapter.cpp
@@ -73,6 +75,7 @@ qt_add_executable(auralbit
 target_link_libraries(auralbit PRIVATE
     Qt6::Widgets
     Qt6::DBus
+    PkgConfig::LIBMTP
     auralbit_audio
     auralbit_library
 )
@@ -86,6 +89,8 @@ include(GNUInstallDirs)
 install(TARGETS auralbit RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES ${CMAKE_SOURCE_DIR}/resources/auralbit.desktop
         DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+install(FILES ${CMAKE_SOURCE_DIR}/resources/auralbit.svg
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
 
 add_executable(auralbit-cli cli_main.cpp)
 set_target_properties(auralbit-cli PROPERTIES

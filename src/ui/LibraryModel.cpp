@@ -37,19 +37,23 @@ void LibraryModel::reload(library::Database& db) {
     const QBrush mutedColor(QColor("#7a7c84"));
 
     for (const auto& a : artists) {
-        auto* artistItem = new QStandardItem(QString::fromStdString(a.name));
+        const QString artistName = QString::fromStdString(a.name);
+        auto* artistItem = new QStandardItem(artistName);
         artistItem->setForeground(primary);
         artistItem->setData(static_cast<int>(RowKind::Artist), roles::Kind);
         artistItem->setData(QVariant::fromValue<qlonglong>(a.id), roles::EntityId);
+        artistItem->setData(artistName, roles::FilterText);
         QStandardItem* artistRight = new QStandardItem();
         invisibleRootItem()->appendRow({artistItem, artistRight});
 
         const auto albums = db.albums_for_artist(a.id);
         for (const auto& al : albums) {
-            auto* albumItem = new QStandardItem(QString::fromStdString(al.name));
+            const QString albumName = QString::fromStdString(al.name);
+            auto* albumItem = new QStandardItem(albumName);
             albumItem->setForeground(albumColor);
             albumItem->setData(static_cast<int>(RowKind::Album), roles::Kind);
             albumItem->setData(QVariant::fromValue<qlonglong>(al.id), roles::EntityId);
+            albumItem->setData(artistName + " " + albumName, roles::FilterText);
 
             auto* albumRight = new QStandardItem(QString::number(al.track_count));
             albumRight->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
@@ -70,6 +74,8 @@ void LibraryModel::reload(library::Database& db) {
                 trackItem->setData(QString::fromStdString(t.path), roles::TrackPath);
                 trackItem->setData(QVariant::fromValue<qlonglong>(t.duration_ms),
                                    roles::DurationMs);
+                trackItem->setData(artistName + " " + albumName + " " + display,
+                                   roles::FilterText);
 
                 auto* timeItem = new QStandardItem(formatDuration(t.duration_ms));
                 timeItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);

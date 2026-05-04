@@ -9,6 +9,7 @@
 class QLineEdit;
 class QLabel;
 class QMenu;
+class QSortFilterProxyModel;
 class QStatusBar;
 class QSystemTrayIcon;
 class QTimer;
@@ -83,6 +84,7 @@ private:
     QLineEdit* filter_edit_ = nullptr;
     LibraryTree* tree_ = nullptr;
     LibraryModel* model_ = nullptr;
+    QSortFilterProxyModel* filter_proxy_ = nullptr;
     LibraryTree* playlists_tree_ = nullptr;
     PlaylistsModel* playlists_model_ = nullptr;
     TransportBar* transport_ = nullptr;

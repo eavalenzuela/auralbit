@@ -16,6 +16,7 @@
 #include <QPainter>
 #include <QPixmap>
 #include <QScreen>
+#include <QSortFilterProxyModel>
 #include <QSettings>
 #include <QStatusBar>
 #include <QSystemTrayIcon>
@@ -35,6 +36,7 @@
 #include "library/PlaylistIO.h"
 #include "library/Scanner.h"
 #include "sync/MountedFsTarget.h"
+#include "sync/MtpTarget.h"
 
 #include <QDBusObjectPath>
 
@@ -173,11 +175,22 @@ void MainWindow::buildLibraryTab(QWidget* parent) {
     tree_->setContextMenuPolicy(Qt::CustomContextMenu);
 
     model_ = new LibraryModel(tree_);
-    tree_->setModel(model_);
+    filter_proxy_ = new QSortFilterProxyModel(tree_);
+    filter_proxy_->setSourceModel(model_);
+    filter_proxy_->setFilterCaseSensitivity(Qt::CaseInsensitive);
+    filter_proxy_->setFilterKeyColumn(0);
+    filter_proxy_->setFilterRole(roles::FilterText);
+    filter_proxy_->setRecursiveFilteringEnabled(true);
+    tree_->setModel(filter_proxy_);
 
     connect(tree_, &QTreeView::doubleClicked, this, &MainWindow::onTrackActivated);
     connect(tree_, &QTreeView::customContextMenuRequested, this,
             &MainWindow::onTreeContextMenu);
+    connect(filter_edit_, &QLineEdit::textChanged, this, [this](const QString& text) {
+        filter_proxy_->setFilterFixedString(text);
+        // Re-expand any visible parents so users see the matches under them.
+        if (!text.isEmpty()) tree_->expandAll();
+    });
 
     layout->addWidget(tree_, 1);
 }
@@ -406,7 +419,9 @@ bool MainWindow::loadCurrentPaused() {
         return false;
     }
 
-    const QModelIndex lib_idx = model_->indexForTrackId(id);
+    const QModelIndex lib_src_idx = model_->indexForTrackId(id);
+    const QModelIndex lib_idx =
+        lib_src_idx.isValid() ? filter_proxy_->mapFromSource(lib_src_idx) : QModelIndex();
     if (lib_idx.isValid()) {
         current_track_ = QPersistentModelIndex(lib_idx);
         tree_->scrollTo(lib_idx, QAbstractItemView::PositionAtCenter);
@@ -424,7 +439,9 @@ bool MainWindow::loadCurrentPaused() {
     playlists_tree_->selectionModel()->clearSelection();
 
     const auto fmt = path.section('.', -1).toUpper();
-    transport_->setFormatChips(fmt, "—");
+    const uint32_t sr = player_->sample_rate();
+    const QString khz = sr > 0 ? QString::number(sr / 1000.0, 'f', 1) : QString("—");
+    transport_->setFormatChips(fmt, khz);
 
     publishMprisMetadata(id);
     if (mpris_) mpris_->notifyPlaybackStateChanged();
@@ -802,8 +819,10 @@ void MainWindow::onPlaylistsContextMenu(const QPoint& pos) {
                 reloadPlaylists();
             });
 
-            auto* syncAction = menu.addAction("Sync to…");
-            connect(syncAction, &QAction::triggered, this, [this, entity_id, idx] {
+            auto* syncMenu = menu.addMenu("Sync to");
+
+            auto* syncFolder = syncMenu->addAction("Folder…");
+            connect(syncFolder, &QAction::triggered, this, [this, entity_id, idx] {
                 const QString dir = QFileDialog::getExistingDirectory(
                     this, "Sync to (target folder)", QString(),
                     QFileDialog::ShowDirsOnly);
@@ -814,6 +833,24 @@ void MainWindow::onPlaylistsContextMenu(const QPoint& pos) {
                 dlg->setAttribute(Qt::WA_DeleteOnClose);
                 dlg->show();
             });
+
+            const auto mtp_devices = sync::MtpTarget::list_devices();
+            if (!mtp_devices.empty()) syncMenu->addSeparator();
+            for (size_t i = 0; i < mtp_devices.size(); ++i) {
+                const auto& d = mtp_devices[i];
+                QString label = QString("MTP: %1 %2")
+                                    .arg(QString::fromStdString(d.vendor),
+                                         QString::fromStdString(d.product));
+                auto* action = syncMenu->addAction(label);
+                const int dev_index = static_cast<int>(i);
+                connect(action, &QAction::triggered, this, [this, entity_id, idx, dev_index] {
+                    auto target = std::make_unique<sync::MtpTarget>(dev_index);
+                    const QString name = idx.data(Qt::DisplayRole).toString();
+                    auto* dlg = new SyncDialog(*db_, std::move(target), entity_id, name, this);
+                    dlg->setAttribute(Qt::WA_DeleteOnClose);
+                    dlg->show();
+                });
+            }
 
             auto* exportAction = menu.addAction("Export…");
             connect(exportAction, &QAction::triggered, this, [this, entity_id, idx] {
