@@ -1,0 +1,180 @@
+/* auralbit — dark theme matching mockup.png
+ * Palette:
+ *   bg          #1d1e22
+ *   panel       #26282f
+ *   row-hover   #2c2e36
+ *   row-sel     #33353d
+ *   text        #e6e6e6
+ *   muted       #7a7c84
+ *   accent      #e8a85c   (warm orange for active tab, current track, viz)
+ *   chip-bg     #2a2c33
+ */
+
+QWidget {
+    background: #1d1e22;
+    color: #e6e6e6;
+    font-family: "Inter", "Segoe UI", "Cantarell", "Helvetica Neue", sans-serif;
+    font-size: 12px;
+}
+
+QMainWindow::separator { background: #1d1e22; width: 0; height: 0; }
+
+/* ---------------- Tabs (Library / Playlists) ---------------- */
+
+QTabWidget::pane {
+    border: none;
+    background: #1d1e22;
+}
+
+QTabBar {
+    background: #26282f;
+    qproperty-drawBase: 0;
+}
+
+QTabBar::tab {
+    background: #26282f;
+    color: #b8babf;
+    padding: 8px 16px 8px 16px;
+    margin: 0;
+    border: none;
+    border-bottom: 2px solid transparent;
+}
+
+QTabBar::tab:selected {
+    color: #e6e6e6;
+    border-bottom: 2px solid #e8a85c;
+}
+
+QTabBar::tab:hover:!selected { color: #d6d8de; }
+
+/* ---------------- Header strip ---------------- */
+
+#headerStrip {
+    background: #1d1e22;
+    border-bottom: 1px solid #15161a;
+    padding: 6px 10px;
+}
+
+#headerLabel {
+    color: #6f717a;
+    letter-spacing: 1px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+#filterEdit {
+    background: #26282f;
+    border: 1px solid #2e3038;
+    border-radius: 3px;
+    padding: 3px 8px;
+    color: #d8dade;
+    selection-background-color: #e8a85c;
+    selection-color: #1d1e22;
+}
+
+#filterEdit:focus { border: 1px solid #e8a85c; }
+
+/* ---------------- Tree (library) ---------------- */
+
+QTreeView {
+    background: #1d1e22;
+    border: none;
+    outline: 0;
+    show-decoration-selected: 1;
+    alternate-background-color: #1d1e22;
+}
+
+QTreeView::item {
+    padding: 3px 0;
+    border: none;
+    color: #d8dade;
+}
+
+QTreeView::item:hover {
+    background: #2c2e36;
+}
+
+QTreeView::item:selected {
+    background: #33353d;
+    color: #e6e6e6;
+}
+
+QTreeView::branch:has-children:!has-siblings:closed,
+QTreeView::branch:closed:has-children:has-siblings {
+    /* Use Qt's default arrow tinted via image-rendering would need svgs;
+     * leave triangles to the engine but recolor by setting branch images later. */
+}
+
+/* ---------------- Now playing strip ---------------- */
+
+#nowPlayingStrip {
+    background: #1a1b1f;
+    border-top: 1px solid #131418;
+}
+
+#nowTitle      { color: #ececec; font-size: 13px; font-weight: 500; }
+#nowSubtitle   { color: #7a7c84; font-size: 11px; }
+#nowTime       { color: #b8babf; font-size: 12px; }
+#nowCover      { background: #26282f; border-radius: 4px; }
+
+/* ---------------- Transport row ---------------- */
+
+#transportRow {
+    background: #1a1b1f;
+    border-top: 1px solid #131418;
+}
+
+QToolButton#transportBtn {
+    background: transparent;
+    border: none;
+    color: #d6d8de;
+    padding: 4px 8px;
+}
+
+QToolButton#transportBtn:hover { color: #ffffff; }
+QToolButton#transportBtn:checked { color: #e8a85c; }
+
+/* Format chips on the right of the transport row. */
+QLabel.chip {
+    background: #2a2c33;
+    color: #b8babf;
+    padding: 2px 7px;
+    border-radius: 3px;
+    font-size: 10px;
+    letter-spacing: 0.5px;
+}
+
+QLabel.chip[accent="true"] {
+    background: transparent;
+    color: #e8a85c;
+}
+
+/* ---------------- Scrollbars ---------------- */
+
+QScrollBar:vertical {
+    background: transparent;
+    width: 8px;
+    margin: 0;
+}
+
+QScrollBar::handle:vertical {
+    background: #2e3038;
+    min-height: 24px;
+    border-radius: 3px;
+}
+
+QScrollBar::handle:vertical:hover { background: #3a3c45; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+
+QScrollBar:horizontal {
+    background: transparent;
+    height: 8px;
+}
+QScrollBar::handle:horizontal {
+    background: #2e3038;
+    min-width: 24px;
+    border-radius: 3px;
+}
+QScrollBar::handle:horizontal:hover { background: #3a3c45; }
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }

@@ -45,6 +45,11 @@ qt_add_executable(auralbit
     main.cpp
     ui/MainWindow.cpp
     ui/MainWindow.h
+    ui/LibraryTree.cpp
+    ui/LibraryTree.h
+    ui/TransportBar.cpp
+    ui/TransportBar.h
+    ${CMAKE_SOURCE_DIR}/resources/auralbit.qrc
 )
 target_link_libraries(auralbit PRIVATE
     Qt6::Widgets
