@@ -10,9 +10,11 @@ class QLineEdit;
 class QLabel;
 class QMenu;
 class QStatusBar;
+class QSystemTrayIcon;
 class QTimer;
 
 namespace auralbit::audio { class Player; }
+namespace auralbit::desktop { class MprisAdapter; }
 namespace auralbit::library { class Database; }
 
 namespace auralbit::ui {
@@ -47,6 +49,9 @@ private slots:
 private:
     void buildLibraryTab(QWidget* parent);
     void buildPlaylistsTab(QWidget* parent);
+    void buildTrayIcon();
+    void buildMpris();
+    void publishMprisMetadata(int64_t track_id);
     void reloadPlaylists();
 
     // Queue helpers.
@@ -56,6 +61,9 @@ private:
     void playPlaylist(int64_t playlist_id, int64_t start_track_id = 0);
     void playQueueAt(int index);
     void loadCurrent();
+    bool loadCurrentPaused();
+    void persistResume();
+    void restoreResume();
 
     // Playlist helpers.
     void promptCreatePlaylist();
@@ -69,6 +77,7 @@ private:
 
     std::unique_ptr<library::Database> db_;
     std::unique_ptr<audio::Player> player_;
+    desktop::MprisAdapter* mpris_ = nullptr;  // Owned by Qt parent.
 
     QLabel* header_label_ = nullptr;
     QLineEdit* filter_edit_ = nullptr;
@@ -79,6 +88,7 @@ private:
     TransportBar* transport_ = nullptr;
     QStatusBar* status_ = nullptr;
     QTimer* progress_timer_ = nullptr;
+    QSystemTrayIcon* tray_ = nullptr;
 
     QPersistentModelIndex current_track_;
 

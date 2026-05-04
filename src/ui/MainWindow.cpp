@@ -8,13 +8,17 @@
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMetaObject>
+#include <QPainter>
+#include <QPixmap>
 #include <QScreen>
 #include <QSettings>
 #include <QStatusBar>
+#include <QSystemTrayIcon>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTimer>
@@ -26,10 +30,13 @@
 #include "TransportBar.h"
 #include "audio/Player.h"
 #include "SyncDialog.h"
+#include "desktop/MprisAdapter.h"
 #include "library/Database.h"
 #include "library/PlaylistIO.h"
 #include "library/Scanner.h"
 #include "sync/MountedFsTarget.h"
+
+#include <QDBusObjectPath>
 
 #include <QInputDialog>
 #include <QMessageBox>
@@ -109,11 +116,15 @@ MainWindow::MainWindow(QWidget* parent)
 
     reloadLibrary();
     reloadPlaylists();
+    restoreResume();
 
     progress_timer_ = new QTimer(this);
     progress_timer_->setInterval(100);
     connect(progress_timer_, &QTimer::timeout, this, &MainWindow::onPositionTick);
     progress_timer_->start();
+
+    buildTrayIcon();
+    buildMpris();
 
     connect(transport_, &TransportBar::playPauseClicked, this, &MainWindow::onPlayPauseClicked);
     connect(transport_, &TransportBar::prevClicked, this, &MainWindow::onPrevClicked);
@@ -380,22 +391,20 @@ void MainWindow::playQueueAt(int index) {
     loadCurrent();
 }
 
-void MainWindow::loadCurrent() {
-    if (queue_index_ < 0 || queue_index_ >= static_cast<int>(queue_.size())) return;
+bool MainWindow::loadCurrentPaused() {
+    if (queue_index_ < 0 || queue_index_ >= static_cast<int>(queue_.size())) return false;
     const int64_t id = queue_[queue_index_];
     const auto path_opt = db_->track_path(id);
     if (!path_opt) {
         status_->showMessage("Track missing from DB", 3000);
-        return;
+        return false;
     }
     const QString path = QString::fromStdString(*path_opt);
 
     if (!player_->load(path.toStdString())) {
         status_->showMessage("Failed to load: " + path, 4000);
-        return;
+        return false;
     }
-    player_->play();
-    was_playing_ = true;
 
     const QModelIndex lib_idx = model_->indexForTrackId(id);
     if (lib_idx.isValid()) {
@@ -416,6 +425,17 @@ void MainWindow::loadCurrent() {
 
     const auto fmt = path.section('.', -1).toUpper();
     transport_->setFormatChips(fmt, "—");
+
+    publishMprisMetadata(id);
+    if (mpris_) mpris_->notifyPlaybackStateChanged();
+    return true;
+}
+
+void MainWindow::loadCurrent() {
+    if (!loadCurrentPaused()) return;
+    player_->play();
+    was_playing_ = true;
+    if (mpris_) mpris_->notifyPlaybackStateChanged();
 }
 
 void MainWindow::onPlayPauseClicked() {
@@ -425,6 +445,7 @@ void MainWindow::onPlayPauseClicked() {
         case PlayerState::Paused:  player_->play(); was_playing_ = true; break;
         case PlayerState::Stopped: /* nothing loaded */ break;
     }
+    if (mpris_) mpris_->notifyPlaybackStateChanged();
 }
 
 void MainWindow::onPrevClicked() {
@@ -460,8 +481,166 @@ void MainWindow::onPositionTick() {
 
 void MainWindow::closeEvent(QCloseEvent* event) {
     persistGeometry();
+    persistResume();
     if (player_) player_->stop();
     QMainWindow::closeEvent(event);
+}
+
+void MainWindow::buildMpris() {
+    mpris_ = new desktop::MprisAdapter(player_.get(), this);
+    if (!mpris_->registerOnBus()) {
+        // Not fatal — D-Bus may be unavailable (chroot, headless, etc.).
+        return;
+    }
+
+    using desktop::MprisAdapter;
+    connect(mpris_, &MprisAdapter::requestPlay,      this, [this] {
+        if (player_->state() == audio::PlayerState::Stopped) loadCurrent();
+        else { player_->play(); was_playing_ = true; mpris_->notifyPlaybackStateChanged(); }
+    });
+    connect(mpris_, &MprisAdapter::requestPause, this, [this] {
+        if (player_->state() == audio::PlayerState::Playing) {
+            player_->pause();
+            was_playing_ = false;
+            mpris_->notifyPlaybackStateChanged();
+        }
+    });
+    connect(mpris_, &MprisAdapter::requestPlayPause, this, &MainWindow::onPlayPauseClicked);
+    connect(mpris_, &MprisAdapter::requestStop, this, [this] {
+        player_->stop();
+        was_playing_ = false;
+        mpris_->notifyPlaybackStateChanged();
+    });
+    connect(mpris_, &MprisAdapter::requestNext,     this, &MainWindow::onNextClicked);
+    connect(mpris_, &MprisAdapter::requestPrevious, this, &MainWindow::onPrevClicked);
+    connect(mpris_, &MprisAdapter::requestRaise, this, [this] {
+        showNormal();
+        raise();
+        activateWindow();
+    });
+    connect(mpris_, &MprisAdapter::requestQuit, qApp, &QApplication::quit);
+    connect(mpris_, &MprisAdapter::requestSeek, this, [this](qint64 offset_us) {
+        const double new_pos =
+            player_->position_seconds() + static_cast<double>(offset_us) / 1'000'000.0;
+        player_->seek_seconds(new_pos < 0 ? 0 : new_pos);
+        mpris_->notifySeeked(static_cast<qint64>(player_->position_seconds() * 1'000'000));
+    });
+    connect(mpris_, &MprisAdapter::requestSetPosition, this, [this](qint64 position_us) {
+        player_->seek_seconds(static_cast<double>(position_us) / 1'000'000.0);
+        mpris_->notifySeeked(position_us);
+    });
+}
+
+void MainWindow::publishMprisMetadata(int64_t track_id) {
+    if (!mpris_) return;
+    const auto info = db_->track_info(track_id);
+    QVariantMap m;
+    m["mpris:trackid"] = QVariant::fromValue(QDBusObjectPath(
+        QString("/org/mpris/MediaPlayer2/auralbit/track/%1").arg(track_id)));
+    if (info) {
+        m["mpris:length"] = static_cast<qlonglong>(info->duration_ms) * 1000;  // µs
+        if (!info->title.empty()) m["xesam:title"] = QString::fromStdString(info->title);
+        if (!info->artist.empty()) {
+            m["xesam:artist"] = QStringList{QString::fromStdString(info->artist)};
+        }
+        if (!info->album.empty()) m["xesam:album"] = QString::fromStdString(info->album);
+        if (info->track_no > 0) m["xesam:trackNumber"] = info->track_no;
+        if (info->disc_no > 0) m["xesam:discNumber"] = info->disc_no;
+        if (!info->path.empty()) {
+            m["xesam:url"] = QString("file://") + QString::fromStdString(info->path);
+        }
+    }
+    mpris_->notifyTrackChanged(m);
+    mpris_->notifyCanGoNextChanged(queue_index_ + 1 < static_cast<int>(queue_.size()));
+    mpris_->notifyCanGoPreviousChanged(queue_index_ > 0);
+}
+
+void MainWindow::buildTrayIcon() {
+    if (!QSystemTrayIcon::isSystemTrayAvailable()) return;
+
+    // Generate an accent-orange dot at runtime since we don't ship an icon yet.
+    QPixmap pm(32, 32);
+    pm.fill(Qt::transparent);
+    {
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.setBrush(QColor("#e8a85c"));
+        p.setPen(Qt::NoPen);
+        p.drawEllipse(QRectF(4, 4, 24, 24));
+    }
+    const QIcon icon(pm);
+
+    tray_ = new QSystemTrayIcon(icon, this);
+    setWindowIcon(icon);
+
+    auto* menu = new QMenu(this);
+    auto* playPause = menu->addAction("Play / Pause");
+    connect(playPause, &QAction::triggered, this, &MainWindow::onPlayPauseClicked);
+    auto* prev = menu->addAction("Previous");
+    connect(prev, &QAction::triggered, this, &MainWindow::onPrevClicked);
+    auto* next = menu->addAction("Next");
+    connect(next, &QAction::triggered, this, &MainWindow::onNextClicked);
+    menu->addSeparator();
+    auto* show = menu->addAction("Show / Hide");
+    connect(show, &QAction::triggered, this, [this] {
+        if (isVisible() && !isMinimized()) hide();
+        else { showNormal(); raise(); activateWindow(); }
+    });
+    auto* quit = menu->addAction("Quit");
+    connect(quit, &QAction::triggered, qApp, &QApplication::quit);
+
+    tray_->setContextMenu(menu);
+    tray_->setToolTip("auralbit");
+    connect(tray_, &QSystemTrayIcon::activated, this,
+            [this](QSystemTrayIcon::ActivationReason r) {
+                if (r == QSystemTrayIcon::Trigger) {
+                    if (isVisible() && !isMinimized()) hide();
+                    else { showNormal(); raise(); activateWindow(); }
+                }
+            });
+    tray_->show();
+}
+
+void MainWindow::persistResume() {
+    QSettings s;
+    if (queue_index_ < 0 || queue_index_ >= static_cast<int>(queue_.size()) || !player_) {
+        s.remove("resume/queue");
+        s.remove("resume/index");
+        s.remove("resume/position_seconds");
+        return;
+    }
+    QStringList ids;
+    ids.reserve(static_cast<int>(queue_.size()));
+    for (int64_t id : queue_) ids << QString::number(id);
+    s.setValue("resume/queue", ids.join(','));
+    s.setValue("resume/index", queue_index_);
+    s.setValue("resume/position_seconds", player_->position_seconds());
+}
+
+void MainWindow::restoreResume() {
+    QSettings s;
+    const QString queue_str = s.value("resume/queue").toString();
+    const int idx = s.value("resume/index", -1).toInt();
+    const double pos = s.value("resume/position_seconds", 0.0).toDouble();
+    if (queue_str.isEmpty() || idx < 0) return;
+
+    queue_.clear();
+    for (const QString& token : queue_str.split(',', Qt::SkipEmptyParts)) {
+        queue_.push_back(token.toLongLong());
+    }
+    if (idx >= static_cast<int>(queue_.size())) {
+        queue_.clear();
+        return;
+    }
+    queue_index_ = idx;
+
+    if (!loadCurrentPaused()) {
+        queue_.clear();
+        queue_index_ = -1;
+        return;
+    }
+    if (pos > 0) player_->seek_seconds(pos);
+    was_playing_ = false;  // Stays paused until the user presses play.
 }
 
 void MainWindow::restoreGeometry() {

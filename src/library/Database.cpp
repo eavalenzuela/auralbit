@@ -252,6 +252,36 @@ std::optional<std::string> Database::track_path(int64_t id) {
     return std::string(reinterpret_cast<const char*>(sqlite3_column_text(s, 0)));
 }
 
+std::optional<TrackRow> Database::track_info(int64_t id) {
+    Stmt s(db_,
+           "SELECT t.id, t.path, t.mtime, t.size, COALESCE(t.title,''), "
+           "       COALESCE(ar.name,''), COALESCE(al.name,''), "
+           "       COALESCE(t.track_no,0), COALESCE(t.disc_no,0), "
+           "       COALESCE(t.duration_ms,0), COALESCE(t.bitrate,0), "
+           "       COALESCE(t.sample_rate,0), COALESCE(t.channels,0) "
+           "FROM tracks t "
+           "LEFT JOIN artists ar ON ar.id = t.artist_id "
+           "LEFT JOIN albums  al ON al.id = t.album_id "
+           "WHERE t.id = ?");
+    sqlite3_bind_int64(s, 1, id);
+    if (sqlite3_step(s) != SQLITE_ROW) return std::nullopt;
+    TrackRow r;
+    r.id = sqlite3_column_int64(s, 0);
+    r.path = reinterpret_cast<const char*>(sqlite3_column_text(s, 1));
+    r.mtime = sqlite3_column_int64(s, 2);
+    r.size = sqlite3_column_int64(s, 3);
+    r.title = reinterpret_cast<const char*>(sqlite3_column_text(s, 4));
+    r.artist = reinterpret_cast<const char*>(sqlite3_column_text(s, 5));
+    r.album = reinterpret_cast<const char*>(sqlite3_column_text(s, 6));
+    r.track_no = sqlite3_column_int(s, 7);
+    r.disc_no = sqlite3_column_int(s, 8);
+    r.duration_ms = sqlite3_column_int64(s, 9);
+    r.bitrate = sqlite3_column_int(s, 10);
+    r.sample_rate = sqlite3_column_int(s, 11);
+    r.channels = sqlite3_column_int(s, 12);
+    return r;
+}
+
 std::vector<PlaylistAggregate> Database::all_playlists() {
     std::vector<PlaylistAggregate> out;
     Stmt s(db_,

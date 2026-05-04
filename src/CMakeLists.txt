@@ -64,12 +64,15 @@ qt_add_executable(auralbit
     sync/MountedFsTarget.h
     sync/PlaylistSyncer.cpp
     sync/PlaylistSyncer.h
+    desktop/MprisAdapter.cpp
+    desktop/MprisAdapter.h
     visualizer/Visualizer.cpp
     visualizer/Visualizer.h
     ${CMAKE_SOURCE_DIR}/resources/auralbit.qrc
 )
 target_link_libraries(auralbit PRIVATE
     Qt6::Widgets
+    Qt6::DBus
     auralbit_audio
     auralbit_library
 )
@@ -78,6 +81,11 @@ set_target_properties(auralbit PROPERTIES
     WIN32_EXECUTABLE OFF
     MACOSX_BUNDLE OFF
 )
+
+include(GNUInstallDirs)
+install(TARGETS auralbit RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES ${CMAKE_SOURCE_DIR}/resources/auralbit.desktop
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
 
 add_executable(auralbit-cli cli_main.cpp)
 set_target_properties(auralbit-cli PROPERTIES

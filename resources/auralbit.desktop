@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=auralbit
+GenericName=Music Player
+Comment=Compact music manager and player
+Exec=auralbit %F
+Icon=auralbit
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=music;audio;player;mp3;flac;
+MimeType=audio/mpeg;audio/flac;audio/x-flac;audio/ogg;audio/x-vorbis+ogg;audio/wav;audio/x-wav;application/vnd.apple.mpegurl;audio/x-mpegurl;audio/x-scpls;
+StartupNotify=true
+StartupWMClass=auralbit

@@ -117,6 +117,9 @@ public:
     // Lookup the on-disk path of a track by id (used to load into the Player).
     std::optional<std::string> track_path(int64_t id);
 
+    // Full track info incl. resolved artist/album names (for MPRIS metadata).
+    std::optional<TrackRow> track_info(int64_t id);
+
     // ---- Playlists ----
     std::vector<PlaylistAggregate> all_playlists();
     std::vector<TrackAggregate> tracks_for_playlist(int64_t playlist_id);
