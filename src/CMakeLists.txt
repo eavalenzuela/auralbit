@@ -53,6 +53,8 @@ qt_add_executable(auralbit
     ui/LibraryModel.h
     ui/LibraryTree.cpp
     ui/LibraryTree.h
+    ui/NowPlayingStrip.cpp
+    ui/NowPlayingStrip.h
     ui/PlaylistsModel.cpp
     ui/PlaylistsModel.h
     ui/TransportBar.cpp

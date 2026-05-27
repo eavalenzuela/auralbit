@@ -89,8 +89,12 @@ public:
     double rate() const { return 1.0; }
     void setRate(double) {}
     QVariantMap metadata() const { return m_->metadata(); }
-    double volume() const { return 1.0; }
-    void setVolume(double) {}  // Volume not exposed through Player yet.
+    double volume() const { return m_->player() ? m_->player()->volume() : 1.0; }
+    void setVolume(double v) {
+        if (!m_->player()) return;
+        m_->player()->set_volume(static_cast<float>(v));
+        emit m_->requestVolumeChanged(m_->player()->volume());
+    }
     qlonglong position() const {
         if (!m_->player()) return 0;
         return static_cast<qlonglong>(m_->player()->position_seconds() * 1'000'000);

@@ -37,6 +37,8 @@ bool AudioOutput::start(uint32_t sample_rate, uint16_t channels) {
         ma_device_uninit(device_.get());
         return false;
     }
+    // Re-apply the carried-over volume to the freshly opened device.
+    ma_device_set_master_volume(device_.get(), volume_.load(std::memory_order_acquire));
 
     sample_rate_ = sample_rate;
     channels_ = channels;
@@ -52,6 +54,13 @@ void AudioOutput::stop() {
     sample_rate_ = 0;
     channels_ = 0;
     if (ring_) ring_->clear();
+}
+
+void AudioOutput::set_volume(float v) {
+    if (v < 0.0f) v = 0.0f;
+    if (v > 1.0f) v = 1.0f;
+    volume_.store(v, std::memory_order_release);
+    if (started_) ma_device_set_master_volume(device_.get(), v);
 }
 
 void AudioOutput::on_data(ma_device* dev, void* output, const void* /*input*/, uint32_t frames) {

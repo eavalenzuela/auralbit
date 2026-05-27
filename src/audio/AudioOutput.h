@@ -31,6 +31,11 @@ public:
     uint32_t sample_rate() const { return sample_rate_; }
     uint16_t channels() const { return channels_; }
 
+    // Master output volume in [0, 1]. Persists across start()/stop() so it is
+    // re-applied whenever a new device is opened. Safe to call from any thread.
+    void set_volume(float v);
+    float volume() const { return volume_.load(std::memory_order_acquire); }
+
     // Snapshot of the most recently played mono-mixed samples. Lock-free SPSC:
     // the audio rt callback is the producer, the UI thread is the consumer.
     // Returns the number of samples actually written to `dst` (0 if nothing has
@@ -50,6 +55,7 @@ private:
 
     std::array<float, kVizCapacity> viz_{};
     std::atomic<uint64_t> viz_written_{0};  // Total samples written; cumulative.
+    std::atomic<float> volume_{1.0f};
 };
 
 }  // namespace auralbit::audio

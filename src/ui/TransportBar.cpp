@@ -2,6 +2,8 @@
 
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QSignalBlocker>
+#include <QSlider>
 #include <QToolButton>
 
 #include "visualizer/Visualizer.h"
@@ -50,6 +52,16 @@ TransportBar::TransportBar(QWidget* parent) : QWidget(parent) {
     visualizer_ = new visualizer::Visualizer(this);
     tLayout->addWidget(visualizer_, 1);
 
+    btn_mute_ = makeTransportButton("🔊", this);
+    tLayout->addWidget(btn_mute_);
+
+    volume_ = new QSlider(Qt::Horizontal, this);
+    volume_->setObjectName("volumeSlider");
+    volume_->setRange(0, 100);
+    volume_->setValue(100);
+    volume_->setFixedWidth(70);
+    tLayout->addWidget(volume_);
+
     chip_codec_ = makeChip("—", this);
     chip_rate_ = makeChip("—", this);
     tLayout->addWidget(chip_codec_);
@@ -58,6 +70,30 @@ TransportBar::TransportBar(QWidget* parent) : QWidget(parent) {
     connect(btn_prev_, &QToolButton::clicked, this, &TransportBar::prevClicked);
     connect(btn_play_, &QToolButton::clicked, this, &TransportBar::playPauseClicked);
     connect(btn_next_, &QToolButton::clicked, this, &TransportBar::nextClicked);
+
+    connect(volume_, &QSlider::valueChanged, this, [this](int value) {
+        updateMuteGlyph(value);
+        emit volumeChanged(value / 100.0);
+    });
+    connect(btn_mute_, &QToolButton::clicked, this, [this] {
+        if (volume_->value() > 0) {
+            volume_before_mute_ = volume_->value();
+            volume_->setValue(0);
+        } else {
+            volume_->setValue(volume_before_mute_ > 0 ? volume_before_mute_ : 100);
+        }
+    });
+}
+
+void TransportBar::setVolume(double volume) {
+    const int v = static_cast<int>(volume * 100 + 0.5);
+    QSignalBlocker block(volume_);  // Don't echo back into volumeChanged.
+    volume_->setValue(v);
+    updateMuteGlyph(v);
+}
+
+void TransportBar::updateMuteGlyph(int slider_value) {
+    btn_mute_->setText(slider_value == 0 ? "🔇" : "🔊");
 }
 
 void TransportBar::setFormatChips(const QString& codec, const QString& sample_rate_khz) {

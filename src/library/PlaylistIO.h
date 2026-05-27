@@ -10,8 +10,9 @@ class Database;
 struct ImportResult {
     bool ok = false;
     int64_t playlist_id = 0;
-    int matched = 0;     // Tracks resolved against the library DB.
-    int missing = 0;     // Paths in the file not present in the DB.
+    int matched = 0;     // Tracks resolved against the library DB by exact path.
+    int relinked = 0;    // Resolved by filename after the exact path missed.
+    int missing = 0;     // Paths in the file not found in the DB at all.
     std::string error;   // Set when ok == false.
 };
 

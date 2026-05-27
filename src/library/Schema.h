@@ -4,7 +4,7 @@ namespace auralbit::library {
 
 // Bumped on any incompatible schema change. The DB wrapper runs migrations
 // up to this version on open.
-constexpr int kSchemaVersion = 1;
+constexpr int kSchemaVersion = 2;
 
 constexpr const char* kSchemaSql = R"SQL(
 CREATE TABLE IF NOT EXISTS artists (
@@ -54,6 +54,14 @@ CREATE TABLE IF NOT EXISTS playlist_tracks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_playlist_tracks_track ON playlist_tracks(track_id);
+
+-- Folders the user added to the library. Rescan re-walks these to reconcile
+-- moved/renamed/deleted files against what's on disk.
+CREATE TABLE IF NOT EXISTS library_roots (
+    id       INTEGER PRIMARY KEY,
+    path     TEXT NOT NULL UNIQUE,
+    added_at INTEGER NOT NULL
+);
 )SQL";
 
 }  // namespace auralbit::library

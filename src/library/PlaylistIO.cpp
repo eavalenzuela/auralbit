@@ -4,6 +4,7 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -33,6 +34,26 @@ std::string resolvePath(const std::string& base_dir, const std::string& entry) {
     fs::path p(entry);
     if (p.is_absolute()) return p.lexically_normal().string();
     return (fs::path(base_dir) / p).lexically_normal().string();
+}
+
+// Resolves one playlist entry to a library track id, updating the result
+// counters. Tries the exact resolved path first; if that misses, falls back to
+// a unique-filename match so a playlist written before the library was
+// reorganized still links up. Returns nullopt only when nothing matches.
+std::optional<int64_t> resolveEntry(Database& db, const std::string& base_dir,
+                                    const std::string& entry, ImportResult& r) {
+    const std::string resolved = resolvePath(base_dir, entry);
+    if (auto id = db.track_id_for_path(resolved)) {
+        ++r.matched;
+        return id;
+    }
+    const std::string base = fs::path(resolved).filename().string();
+    if (auto id = db.track_id_for_basename(base)) {
+        ++r.relinked;
+        return id;
+    }
+    ++r.missing;
+    return std::nullopt;
 }
 
 // Picks an unused playlist name based on `suggested`, appending " (N)" until
@@ -68,13 +89,7 @@ ImportResult import_m3u(Database& db, const std::string& file_path) {
     while (std::getline(in, line)) {
         line = trim(line);
         if (line.empty() || line[0] == '#') continue;
-        const std::string resolved = resolvePath(base_dir, line);
-        if (auto id = db.track_id_for_path(resolved)) {
-            ids.push_back(*id);
-            ++r.matched;
-        } else {
-            ++r.missing;
-        }
+        if (auto id = resolveEntry(db, base_dir, line, r)) ids.push_back(*id);
     }
     db.set_playlist_positions(pid, ids);
     r.ok = true;
@@ -118,13 +133,7 @@ ImportResult import_pls(Database& db, const std::string& file_path) {
 
     std::vector<int64_t> ids;
     for (const auto& [idx, path] : entries) {
-        const std::string resolved = resolvePath(base_dir, path);
-        if (auto id = db.track_id_for_path(resolved)) {
-            ids.push_back(*id);
-            ++r.matched;
-        } else {
-            ++r.missing;
-        }
+        if (auto id = resolveEntry(db, base_dir, path, r)) ids.push_back(*id);
     }
     db.set_playlist_positions(pid, ids);
     r.ok = true;

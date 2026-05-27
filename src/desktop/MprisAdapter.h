@@ -52,6 +52,7 @@ signals:
     void requestPrevious();
     void requestSeek(qint64 offset_us);
     void requestSetPosition(qint64 position_us);
+    void requestVolumeChanged(double volume);  // [0, 1], from a D-Bus client.
     void requestOpenUri(const QString& uri);
 
 private:

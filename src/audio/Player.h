@@ -32,6 +32,10 @@ public:
     double position_seconds() const;
     double duration_seconds() const;
 
+    // Master output volume in [0, 1]. Survives track changes.
+    void set_volume(float v) { output_.set_volume(v); }
+    float volume() const { return output_.volume(); }
+
     // Borrow the audio output (e.g. for the visualizer's PCM tap). Lifetime
     // matches the Player's. Safe to call from any thread.
     const AudioOutput& output() const { return output_; }

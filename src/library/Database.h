@@ -25,6 +25,7 @@ struct TrackRow {
     int bitrate = 0;
     int sample_rate = 0;
     int channels = 0;
+    std::string cover_path;  // Album cover, resolved from albums table.
 };
 
 struct PlaylistAggregate {
@@ -139,11 +140,38 @@ public:
     // Path → track id lookup (for M3U/PLS import).
     std::optional<int64_t> track_id_for_path(std::string_view path);
 
+    // Fallback lookup for when an exact path misses (e.g. a playlist file
+    // written before the library was reorganized): finds a track by its
+    // filename alone. Returns the id only when exactly one track in the
+    // library has that basename; an ambiguous match returns nullopt rather
+    // than guessing. `exclude_id` skips a known row (used when relinking a
+    // moved track, where the stale row still shares the basename).
+    std::optional<int64_t> track_id_for_basename(std::string_view basename,
+                                                 int64_t exclude_id = 0);
+
+    // Repoints every playlist entry from one track id to another. Used to keep
+    // playlists intact when a moved file is rediscovered under a new row.
+    bool repoint_playlist_tracks(int64_t from_id, int64_t to_id);
+
     // All tracks as (id, path). Used by the rescan flow.
     std::vector<std::pair<int64_t, std::string>> all_track_paths();
 
+    // Deletes a single track row (e.g. its file vanished from disk).
+    bool delete_track(int64_t id);
+
     // Drops any artists/albums with zero remaining tracks.
     void prune_orphans();
+
+    // ---- Library roots ----
+    // Records a folder the user added (no-op if already present).
+    bool add_root(std::string_view path);
+    // Forgets a folder; does not touch the track rows under it.
+    bool remove_root(std::string_view path);
+    std::vector<std::string> all_roots();
+
+    // Wipes the entire catalog: tracks, albums, artists, and roots.
+    // Playlist definitions remain, but their track links cascade away.
+    void clear_library();
 
     sqlite3* handle() { return db_; }
 

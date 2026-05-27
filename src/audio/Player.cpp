@@ -138,7 +138,14 @@ void Player::decode_loop() {
         }
 
         if (frames_read == 0) {
-            // EOF — drain remaining samples and stop.
+            // EOF — wait for the ring to drain so MainWindow's auto-advance
+            // doesn't tear down the device while the tail is still queued.
+            while (!quit_.load(std::memory_order_acquire) &&
+                   output_.ring().read_available() > 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            // Let miniaudio's internal buffer flush before signalling Stopped.
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
             state_.store(PlayerState::Stopped, std::memory_order_release);
             break;
         }

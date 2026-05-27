@@ -22,6 +22,7 @@ namespace auralbit::ui {
 
 class LibraryModel;
 class LibraryTree;
+class NowPlayingStrip;
 class PlaylistsModel;
 class TransportBar;
 
@@ -37,6 +38,7 @@ protected:
 private slots:
     void onAddFolder();
     void onRescanLibrary();
+    void onRemoveLibrary();
     void onTrackActivated(const QModelIndex& index);
     void onPlayPauseClicked();
     void onPrevClicked();
@@ -60,6 +62,11 @@ private:
     void playAlbum(int64_t album_id);
     void playArtist(int64_t artist_id);
     void playPlaylist(int64_t playlist_id, int64_t start_track_id = 0);
+    // Replaces the queue with a shuffled copy of `track_ids` and starts playing
+    // from index 0. One-shot: subsequent Play actions seed sequential queues.
+    void playShuffled(std::vector<int64_t> track_ids);
+    void playShuffledLibrary();
+    void playShuffledPlaylist(int64_t playlist_id);
     void playQueueAt(int index);
     void loadCurrent();
     bool loadCurrentPaused();
@@ -87,6 +94,7 @@ private:
     QSortFilterProxyModel* filter_proxy_ = nullptr;
     LibraryTree* playlists_tree_ = nullptr;
     PlaylistsModel* playlists_model_ = nullptr;
+    NowPlayingStrip* now_playing_ = nullptr;
     TransportBar* transport_ = nullptr;
     QStatusBar* status_ = nullptr;
     QTimer* progress_timer_ = nullptr;

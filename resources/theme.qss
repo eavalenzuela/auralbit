@@ -115,7 +115,25 @@ QTreeView::branch:closed:has-children:has-siblings {
 #nowTitle      { color: #ececec; font-size: 13px; font-weight: 500; }
 #nowSubtitle   { color: #7a7c84; font-size: 11px; }
 #nowTime       { color: #b8babf; font-size: 12px; }
-#nowCover      { background: #26282f; border-radius: 4px; }
+#nowCover      { background: #26282f; border-radius: 4px; color: #5a5c64; font-size: 18px; }
+
+/* Seek bar in the now-playing strip. */
+#seekSlider::groove:horizontal {
+    height: 4px;
+    background: #2e3038;
+    border-radius: 2px;
+}
+#seekSlider::sub-page:horizontal {
+    background: #e8a85c;
+    border-radius: 2px;
+}
+#seekSlider::handle:horizontal {
+    background: #e8a85c;
+    width: 10px;
+    margin: -4px 0;
+    border-radius: 5px;
+}
+#seekSlider::handle:horizontal:hover { background: #f2b86e; }
 
 /* ---------------- Transport row ---------------- */
 
@@ -148,6 +166,24 @@ QLabel.chip[accent="true"] {
     background: transparent;
     color: #e8a85c;
 }
+
+/* Volume slider in the transport row. */
+#volumeSlider::groove:horizontal {
+    height: 3px;
+    background: #2e3038;
+    border-radius: 2px;
+}
+#volumeSlider::sub-page:horizontal {
+    background: #8a8c94;
+    border-radius: 2px;
+}
+#volumeSlider::handle:horizontal {
+    background: #b8babf;
+    width: 8px;
+    margin: -3px 0;
+    border-radius: 4px;
+}
+#volumeSlider::handle:horizontal:hover { background: #e8a85c; }
 
 /* ---------------- Context menus ---------------- */
 

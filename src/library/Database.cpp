@@ -258,7 +258,8 @@ std::optional<TrackRow> Database::track_info(int64_t id) {
            "       COALESCE(ar.name,''), COALESCE(al.name,''), "
            "       COALESCE(t.track_no,0), COALESCE(t.disc_no,0), "
            "       COALESCE(t.duration_ms,0), COALESCE(t.bitrate,0), "
-           "       COALESCE(t.sample_rate,0), COALESCE(t.channels,0) "
+           "       COALESCE(t.sample_rate,0), COALESCE(t.channels,0), "
+           "       COALESCE(al.cover_path,'') "
            "FROM tracks t "
            "LEFT JOIN artists ar ON ar.id = t.artist_id "
            "LEFT JOIN albums  al ON al.id = t.album_id "
@@ -279,6 +280,9 @@ std::optional<TrackRow> Database::track_info(int64_t id) {
     r.bitrate = sqlite3_column_int(s, 10);
     r.sample_rate = sqlite3_column_int(s, 11);
     r.channels = sqlite3_column_int(s, 12);
+    if (auto* c = sqlite3_column_text(s, 13)) {
+        r.cover_path = reinterpret_cast<const char*>(c);
+    }
     return r;
 }
 
@@ -404,6 +408,37 @@ std::optional<int64_t> Database::track_id_for_path(std::string_view path) {
     return sqlite3_column_int64(s, 0);
 }
 
+std::optional<int64_t> Database::track_id_for_basename(std::string_view basename,
+                                                       int64_t exclude_id) {
+    if (basename.empty()) return std::nullopt;
+    // Match paths ending in "/<basename>". Escape LIKE metacharacters so a
+    // filename containing % or _ doesn't turn into a wildcard.
+    std::string esc;
+    esc.reserve(basename.size() + 2);
+    for (char c : basename) {
+        if (c == '\\' || c == '%' || c == '_') esc.push_back('\\');
+        esc.push_back(c);
+    }
+    const std::string pattern = "%/" + esc;
+
+    Stmt s(db_, "SELECT id FROM tracks WHERE path LIKE ? ESCAPE '\\' AND id <> ?");
+    bind_text(s, 1, pattern);
+    sqlite3_bind_int64(s, 2, exclude_id);
+    std::optional<int64_t> found;
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        if (found) return std::nullopt;  // More than one match — ambiguous.
+        found = sqlite3_column_int64(s, 0);
+    }
+    return found;
+}
+
+bool Database::repoint_playlist_tracks(int64_t from_id, int64_t to_id) {
+    Stmt s(db_, "UPDATE playlist_tracks SET track_id = ? WHERE track_id = ?");
+    sqlite3_bind_int64(s, 1, to_id);
+    sqlite3_bind_int64(s, 2, from_id);
+    return sqlite3_step(s) == SQLITE_DONE;
+}
+
 std::vector<std::pair<int64_t, std::string>> Database::all_track_paths() {
     std::vector<std::pair<int64_t, std::string>> out;
     Stmt s(db_, "SELECT id, path FROM tracks");
@@ -414,6 +449,44 @@ std::vector<std::pair<int64_t, std::string>> Database::all_track_paths() {
         out.emplace_back(id, std::move(path));
     }
     return out;
+}
+
+bool Database::delete_track(int64_t id) {
+    Stmt s(db_, "DELETE FROM tracks WHERE id = ?");
+    sqlite3_bind_int64(s, 1, id);
+    return sqlite3_step(s) == SQLITE_DONE;
+}
+
+bool Database::add_root(std::string_view path) {
+    if (path.empty()) return false;
+    Stmt s(db_, "INSERT OR IGNORE INTO library_roots(path, added_at) "
+                "VALUES (?, strftime('%s','now'))");
+    bind_text(s, 1, path);
+    return sqlite3_step(s) == SQLITE_DONE;
+}
+
+bool Database::remove_root(std::string_view path) {
+    Stmt s(db_, "DELETE FROM library_roots WHERE path = ?");
+    bind_text(s, 1, path);
+    return sqlite3_step(s) == SQLITE_DONE;
+}
+
+std::vector<std::string> Database::all_roots() {
+    std::vector<std::string> out;
+    Stmt s(db_, "SELECT path FROM library_roots ORDER BY path");
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        if (auto* p = sqlite3_column_text(s, 0)) {
+            out.emplace_back(reinterpret_cast<const char*>(p));
+        }
+    }
+    return out;
+}
+
+void Database::clear_library() {
+    exec("DELETE FROM tracks");
+    exec("DELETE FROM albums");
+    exec("DELETE FROM artists");
+    exec("DELETE FROM library_roots");
 }
 
 void Database::prune_orphans() {

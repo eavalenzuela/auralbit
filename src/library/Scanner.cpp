@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 #include <taglib/audioproperties.h>
 #include <taglib/fileref.h>
@@ -88,6 +89,49 @@ std::string extract_cover(TagLib::FileRef& ref, const std::string& cache_dir,
     return out ? full.string() : std::string{};
 }
 
+// Reads tags + audio properties for `path` into a ScanRecord. Returns false if
+// the file can't be opened or has no tag.
+bool read_record(const std::string& path, int64_t mtime_ns, int64_t size,
+                 const std::string& cover_cache_dir, ScanRecord& rec) {
+    TagLib::FileRef ref(path.c_str(), true, TagLib::AudioProperties::Average);
+    if (ref.isNull() || !ref.tag()) return false;
+
+    rec.path = path;
+    rec.mtime = mtime_ns;
+    rec.size = size;
+
+    const auto* tag = ref.tag();
+    rec.title = charset::maybe_recover_cjk(tag->title().to8Bit(true));
+    rec.artist = charset::maybe_recover_cjk(tag->artist().to8Bit(true));
+    rec.album = charset::maybe_recover_cjk(tag->album().to8Bit(true));
+    rec.year = static_cast<int>(tag->year());
+    rec.track_no = static_cast<int>(tag->track());
+
+    // Disc number lives in the property map under "DISCNUMBER".
+    const auto props = ref.properties();
+    if (props.contains("DISCNUMBER")) {
+        const auto& list = props["DISCNUMBER"];
+        if (!list.isEmpty()) {
+            rec.disc_no = std::atoi(list.front().to8Bit(true).c_str());
+        }
+    }
+
+    if (const auto* ap = ref.audioProperties()) {
+        rec.duration_ms = ap->lengthInMilliseconds();
+        rec.bitrate = ap->bitrate();
+        rec.sample_rate = ap->sampleRate();
+        rec.channels = ap->channels();
+    }
+
+    // Cover art: key by "artist|album" so two albums with the same name from
+    // different artists don't collide.
+    if (!rec.album.empty()) {
+        const std::string album_key = rec.artist + "|" + rec.album;
+        rec.cover_path = extract_cover(ref, cover_cache_dir, album_key);
+    }
+    return true;
+}
+
 }  // namespace
 
 Scanner::Scanner(Database& db, std::string cover_cache_dir)
@@ -103,7 +147,7 @@ std::string Scanner::default_cover_cache_dir() {
     return dir.string();
 }
 
-ScanStats Scanner::scan(const std::string& root, ProgressFn on_progress) {
+ScanStats Scanner::scan(const std::string& root, ProgressFn on_progress, bool force) {
     ScanStats stats;
 
     std::error_code ec;
@@ -136,53 +180,18 @@ ScanStats Scanner::scan(const std::string& root, ProgressFn on_progress) {
             std::chrono::duration_cast<std::chrono::nanoseconds>(mtime.time_since_epoch()).count();
 
         const auto existing = db_.find_track(path_str);
-        if (existing && existing->mtime == mtime_ns &&
+        if (!force && existing && existing->mtime == mtime_ns &&
             existing->size == static_cast<int64_t>(file_size)) {
             ++stats.skipped;
             if (on_progress) on_progress(path_str, stats);
             continue;
         }
 
-        TagLib::FileRef ref(path_str.c_str(), true, TagLib::AudioProperties::Average);
-        if (ref.isNull() || !ref.tag()) {
+        ScanRecord rec;
+        if (!read_record(path_str, mtime_ns, static_cast<int64_t>(file_size),
+                         cover_cache_dir_, rec)) {
             ++stats.failed;
             continue;
-        }
-
-        ScanRecord rec;
-        rec.path = path_str;
-        rec.mtime = mtime_ns;
-        rec.size = static_cast<int64_t>(file_size);
-
-        const auto* tag = ref.tag();
-        rec.title = charset::maybe_recover_cjk(tag->title().to8Bit(true));
-        rec.artist = charset::maybe_recover_cjk(tag->artist().to8Bit(true));
-        rec.album = charset::maybe_recover_cjk(tag->album().to8Bit(true));
-        rec.year = static_cast<int>(tag->year());
-        rec.track_no = static_cast<int>(tag->track());
-
-        // Disc number lives in the property map under "DISCNUMBER".
-        const auto props = ref.properties();
-        if (props.contains("DISCNUMBER")) {
-            const auto& list = props["DISCNUMBER"];
-            if (!list.isEmpty()) {
-                const auto s = list.front().to8Bit(true);
-                rec.disc_no = std::atoi(s.c_str());
-            }
-        }
-
-        if (const auto* ap = ref.audioProperties()) {
-            rec.duration_ms = ap->lengthInMilliseconds();
-            rec.bitrate = ap->bitrate();
-            rec.sample_rate = ap->sampleRate();
-            rec.channels = ap->channels();
-        }
-
-        // Cover art: key by "artist|album" so two albums with the same name
-        // from different artists don't collide.
-        if (!rec.album.empty()) {
-            const std::string album_key = rec.artist + "|" + rec.album;
-            rec.cover_path = extract_cover(ref, cover_cache_dir_, album_key);
         }
 
         if (db_.upsert_track(rec)) {
@@ -201,72 +210,92 @@ ScanStats Scanner::scan(const std::string& root, ProgressFn on_progress) {
 
 ScanStats Scanner::rescan_all(ProgressFn on_progress) {
     ScanStats stats;
-    const auto rows = db_.all_track_paths();
+    const auto roots = db_.all_roots();
 
-    sqlite3_exec(db_.handle(), "BEGIN", nullptr, nullptr, nullptr);
-
-    for (const auto& [id, path_str] : rows) {
-        ++stats.scanned;
-        std::error_code ec;
-        const fs::path p(path_str);
-        if (!fs::exists(p, ec) || !fs::is_regular_file(p, ec)) {
-            // Don't drop the row — the drive might just be unmounted.
-            ++stats.failed;
-            if (on_progress) on_progress(path_str, stats);
-            continue;
-        }
-        const auto file_size = fs::file_size(p, ec);
-        const auto mtime = fs::last_write_time(p, ec);
-        const int64_t mtime_ns =
-            std::chrono::duration_cast<std::chrono::nanoseconds>(mtime.time_since_epoch())
-                .count();
-
-        TagLib::FileRef ref(path_str.c_str(), true, TagLib::AudioProperties::Average);
-        if (ref.isNull() || !ref.tag()) {
-            ++stats.failed;
-            if (on_progress) on_progress(path_str, stats);
-            continue;
-        }
-
-        ScanRecord rec;
-        rec.path = path_str;
-        rec.mtime = mtime_ns;
-        rec.size = static_cast<int64_t>(file_size);
-
-        const auto* tag = ref.tag();
-        rec.title = charset::maybe_recover_cjk(tag->title().to8Bit(true));
-        rec.artist = charset::maybe_recover_cjk(tag->artist().to8Bit(true));
-        rec.album = charset::maybe_recover_cjk(tag->album().to8Bit(true));
-        rec.year = static_cast<int>(tag->year());
-        rec.track_no = static_cast<int>(tag->track());
-
-        const auto props = ref.properties();
-        if (props.contains("DISCNUMBER")) {
-            const auto& list = props["DISCNUMBER"];
-            if (!list.isEmpty()) {
-                rec.disc_no = std::atoi(list.front().to8Bit(true).c_str());
+    // Pre-migration libraries have no recorded roots, so there's nothing to
+    // re-walk. Fall back to re-reading tags for the existing rows in place,
+    // which is what rescan did historically (e.g. for mojibake recovery).
+    // Missing files are kept, since we can't tell an unmounted drive from a
+    // genuinely deleted file without a known, accessible root to anchor on.
+    if (roots.empty()) {
+        sqlite3_exec(db_.handle(), "BEGIN", nullptr, nullptr, nullptr);
+        for (const auto& [id, path_str] : db_.all_track_paths()) {
+            ++stats.scanned;
+            std::error_code ec;
+            const fs::path p(path_str);
+            if (!fs::exists(p, ec) || !fs::is_regular_file(p, ec)) {
+                ++stats.failed;
+                if (on_progress) on_progress(path_str, stats);
+                continue;
             }
+            const int64_t size = static_cast<int64_t>(fs::file_size(p, ec));
+            const int64_t mtime_ns =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    fs::last_write_time(p, ec).time_since_epoch())
+                    .count();
+            ScanRecord rec;
+            if (read_record(path_str, mtime_ns, size, cover_cache_dir_, rec) &&
+                db_.upsert_track(rec)) {
+                ++stats.updated;
+            } else {
+                ++stats.failed;
+            }
+            if (on_progress) on_progress(path_str, stats);
         }
-
-        if (const auto* ap = ref.audioProperties()) {
-            rec.duration_ms = ap->lengthInMilliseconds();
-            rec.bitrate = ap->bitrate();
-            rec.sample_rate = ap->sampleRate();
-            rec.channels = ap->channels();
-        }
-
-        if (!rec.album.empty()) {
-            const std::string album_key = rec.artist + "|" + rec.album;
-            rec.cover_path = extract_cover(ref, cover_cache_dir_, album_key);
-        }
-
-        if (db_.upsert_track(rec)) ++stats.updated;
-        else                       ++stats.failed;
-
-        if (on_progress) on_progress(path_str, stats);
+        sqlite3_exec(db_.handle(), "COMMIT", nullptr, nullptr, nullptr);
+        db_.prune_orphans();
+        return stats;
     }
 
+    // Re-walk each accessible root, force-re-reading tags so moves, renames,
+    // new files, and in-place tag changes are all picked up. Each scan() runs
+    // in its own transaction.
+    std::vector<std::string> accessible;
+    for (const auto& root : roots) {
+        std::error_code ec;
+        if (!fs::exists(root, ec) || !fs::is_directory(root, ec)) continue;
+        accessible.push_back(root);
+        const ScanStats s = scan(root, on_progress, /*force=*/true);
+        stats.scanned += s.scanned;
+        stats.added += s.added;
+        stats.updated += s.updated;
+        stats.skipped += s.skipped;
+        stats.failed += s.failed;
+    }
+
+    // Drop rows whose file has vanished — but only under a root we just
+    // confirmed is mounted, so an unmounted drive keeps its catalog. Tracks
+    // under no known root are left untouched.
+    auto under = [](const std::string& path, const std::string& root) {
+        if (path.size() <= root.size()) return false;
+        if (path.compare(0, root.size(), root) != 0) return false;
+        // Guard against /music matching /music-extra: require a separator.
+        const char sep = path[root.size()];
+        return root.back() == '/' || sep == '/';
+    };
+
+    sqlite3_exec(db_.handle(), "BEGIN", nullptr, nullptr, nullptr);
+    for (const auto& [id, path_str] : db_.all_track_paths()) {
+        bool in_accessible_root = false;
+        for (const auto& root : accessible) {
+            if (under(path_str, root)) { in_accessible_root = true; break; }
+        }
+        if (!in_accessible_root) continue;
+        std::error_code ec;
+        if (!fs::exists(path_str, ec)) {
+            // The file is gone from a mounted root. If the same filename now
+            // lives elsewhere in the library (scan() just added it under a new
+            // row), the file was moved/renamed — carry any playlist entries
+            // over to the new row before dropping the stale one.
+            const std::string base = fs::path(path_str).filename().string();
+            if (auto moved = db_.track_id_for_basename(base, /*exclude_id=*/id)) {
+                db_.repoint_playlist_tracks(id, *moved);
+            }
+            if (db_.delete_track(id)) ++stats.removed;
+        }
+    }
     sqlite3_exec(db_.handle(), "COMMIT", nullptr, nullptr, nullptr);
+
     db_.prune_orphans();
     return stats;
 }

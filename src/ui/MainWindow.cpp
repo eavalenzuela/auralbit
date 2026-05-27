@@ -1,5 +1,7 @@
 #include "MainWindow.h"
 
+#include <algorithm>
+#include <random>
 #include <thread>
 
 #include <QAction>
@@ -19,6 +21,7 @@
 #include <QSortFilterProxyModel>
 #include <QSettings>
 #include <QStatusBar>
+#include <QStringList>
 #include <QSystemTrayIcon>
 #include <QTabBar>
 #include <QTabWidget>
@@ -27,6 +30,7 @@
 
 #include "LibraryModel.h"
 #include "LibraryTree.h"
+#include "NowPlayingStrip.h"
 #include "PlaylistsModel.h"
 #include "TransportBar.h"
 #include "audio/Player.h"
@@ -107,6 +111,13 @@ MainWindow::MainWindow(QWidget* parent)
 
     root->addWidget(tabs, 1);
 
+    now_playing_ = new NowPlayingStrip(central);
+    root->addWidget(now_playing_);
+    connect(now_playing_, &NowPlayingStrip::seekRequested, this, [this](double seconds) {
+        player_->seek_seconds(seconds);
+        if (mpris_) mpris_->notifySeeked(static_cast<qint64>(seconds * 1'000'000));
+    });
+
     transport_ = new TransportBar(central);
     transport_->setPlayer(player_.get());
     root->addWidget(transport_);
@@ -131,6 +142,15 @@ MainWindow::MainWindow(QWidget* parent)
     connect(transport_, &TransportBar::playPauseClicked, this, &MainWindow::onPlayPauseClicked);
     connect(transport_, &TransportBar::prevClicked, this, &MainWindow::onPrevClicked);
     connect(transport_, &TransportBar::nextClicked, this, &MainWindow::onNextClicked);
+    connect(transport_, &TransportBar::volumeChanged, this, [this](double v) {
+        player_->set_volume(static_cast<float>(v));
+        QSettings().setValue("audio/volume", v);
+    });
+
+    // Restore the persisted volume and reflect it in the slider.
+    const double vol = QSettings().value("audio/volume", 1.0).toDouble();
+    player_->set_volume(static_cast<float>(vol));
+    transport_->setVolume(vol);
 
     restoreGeometry();
 }
@@ -221,11 +241,20 @@ void MainWindow::onTreeContextMenu(const QPoint& pos) {
         menu.addSeparator();
     }
 
+    auto* shuffleAction = menu.addAction("Play Shuffled");
+    connect(shuffleAction, &QAction::triggered, this, &MainWindow::playShuffledLibrary);
+
+    menu.addSeparator();
+
     auto* addAction = menu.addAction("Add Folder…");
     connect(addAction, &QAction::triggered, this, &MainWindow::onAddFolder);
 
     auto* rescanAction = menu.addAction("Rescan Library");
     connect(rescanAction, &QAction::triggered, this, &MainWindow::onRescanLibrary);
+
+    auto* removeAction = menu.addAction("Remove Library…");
+    removeAction->setEnabled(model_->trackCount() > 0);
+    connect(removeAction, &QAction::triggered, this, &MainWindow::onRemoveLibrary);
 
     menu.exec(tree_->viewport()->mapToGlobal(pos));
 }
@@ -323,6 +352,7 @@ void MainWindow::onAddFolder() {
     std::thread([this, dir = dir.toStdString()] {
         library::Database scanDb;
         if (!scanDb.open(library::Database::default_path())) return;
+        scanDb.add_root(dir);  // Remembered so Rescan can re-walk it later.
         library::Scanner scanner(scanDb, library::Scanner::default_cover_cache_dir());
         scanner.scan(dir);
         QMetaObject::invokeMethod(this, "onScanFinished", Qt::QueuedConnection);
@@ -337,7 +367,7 @@ void MainWindow::onScanFinished() {
 }
 
 void MainWindow::onRescanLibrary() {
-    status_->showMessage("Rescanning library — re-reading tags…");
+    status_->showMessage("Rescanning library — syncing with disk…");
 
     std::thread([this] {
         library::Database scanDb;
@@ -346,6 +376,22 @@ void MainWindow::onRescanLibrary() {
         scanner.rescan_all();
         QMetaObject::invokeMethod(this, "onScanFinished", Qt::QueuedConnection);
     }).detach();
+}
+
+void MainWindow::onRemoveLibrary() {
+    const auto reply = QMessageBox::warning(
+        this, "Remove Library",
+        QString("Remove all %1 tracks from the library?\n\n"
+                "This only clears auralbit's catalog — your music files on disk "
+                "are not touched. Playlists are kept but will be emptied.")
+            .arg(model_->trackCount()),
+        QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
+    if (reply != QMessageBox::Yes) return;
+
+    db_->clear_library();
+    reloadLibrary();
+    reloadPlaylists();
+    status_->showMessage("Library removed.", 3000);
 }
 
 void MainWindow::onTrackActivated(const QModelIndex& index) {
@@ -398,6 +444,26 @@ void MainWindow::playArtist(int64_t artist_id) {
     playQueueAt(0);
 }
 
+void MainWindow::playShuffled(std::vector<int64_t> track_ids) {
+    if (track_ids.empty()) return;
+    static thread_local std::mt19937 rng{std::random_device{}()};
+    std::shuffle(track_ids.begin(), track_ids.end(), rng);
+    queue_ = std::move(track_ids);
+    playQueueAt(0);
+}
+
+void MainWindow::playShuffledLibrary() {
+    std::vector<int64_t> ids;
+    for (const auto& [id, path] : db_->all_track_paths()) ids.push_back(id);
+    playShuffled(std::move(ids));
+}
+
+void MainWindow::playShuffledPlaylist(int64_t playlist_id) {
+    std::vector<int64_t> ids;
+    for (const auto& t : db_->tracks_for_playlist(playlist_id)) ids.push_back(t.id);
+    playShuffled(std::move(ids));
+}
+
 void MainWindow::playQueueAt(int index) {
     if (index < 0 || index >= static_cast<int>(queue_.size())) return;
     queue_index_ = index;
@@ -443,6 +509,17 @@ bool MainWindow::loadCurrentPaused() {
     const QString khz = sr > 0 ? QString::number(sr / 1000.0, 'f', 1) : QString("—");
     transport_->setFormatChips(fmt, khz);
 
+    if (const auto info = db_->track_info(id)) {
+        const QString title = info->title.empty() ? path.section('/', -1)
+                                                   : QString::fromStdString(info->title);
+        QStringList parts;
+        if (!info->artist.empty()) parts << QString::fromStdString(info->artist);
+        if (!info->album.empty()) parts << QString::fromStdString(info->album);
+        now_playing_->setTrack(title, parts.join(" — "),
+                               QString::fromStdString(info->cover_path),
+                               static_cast<double>(info->duration_ms) / 1000.0);
+    }
+
     publishMprisMetadata(id);
     if (mpris_) mpris_->notifyPlaybackStateChanged();
     return true;
@@ -482,9 +559,11 @@ void MainWindow::onNextClicked() {
 void MainWindow::onPositionTick() {
     using audio::PlayerState;
     const double dur = player_->duration_seconds();
-    const double frac = dur > 0 ? player_->position_seconds() / dur : 0.0;
+    const double pos = player_->position_seconds();
+    const double frac = dur > 0 ? pos / dur : 0.0;
     tree_->setProgress(frac);
     playlists_tree_->setProgress(frac);
+    now_playing_->setPosition(pos);
 
     // Auto-advance: a track that was playing reaches EOF → Player goes Stopped.
     if (was_playing_ && player_->state() == PlayerState::Stopped) {
@@ -526,6 +605,7 @@ void MainWindow::buildMpris() {
     connect(mpris_, &MprisAdapter::requestStop, this, [this] {
         player_->stop();
         was_playing_ = false;
+        now_playing_->clear();
         mpris_->notifyPlaybackStateChanged();
     });
     connect(mpris_, &MprisAdapter::requestNext,     this, &MainWindow::onNextClicked);
@@ -545,6 +625,10 @@ void MainWindow::buildMpris() {
     connect(mpris_, &MprisAdapter::requestSetPosition, this, [this](qint64 position_us) {
         player_->seek_seconds(static_cast<double>(position_us) / 1'000'000.0);
         mpris_->notifySeeked(position_us);
+    });
+    connect(mpris_, &MprisAdapter::requestVolumeChanged, this, [this](double v) {
+        transport_->setVolume(v);  // Player was already updated by the adaptor.
+        QSettings().setValue("audio/volume", v);
     });
 }
 
@@ -597,6 +681,9 @@ void MainWindow::buildTrayIcon() {
     connect(prev, &QAction::triggered, this, &MainWindow::onPrevClicked);
     auto* next = menu->addAction("Next");
     connect(next, &QAction::triggered, this, &MainWindow::onNextClicked);
+    menu->addSeparator();
+    auto* shuffleLib = menu->addAction("Play Shuffled");
+    connect(shuffleLib, &QAction::triggered, this, &MainWindow::playShuffledLibrary);
     menu->addSeparator();
     auto* show = menu->addAction("Show / Hide");
     connect(show, &QAction::triggered, this, [this] {
@@ -795,6 +882,10 @@ void MainWindow::onPlaylistsContextMenu(const QPoint& pos) {
             connect(playAction, &QAction::triggered, this,
                     [this, entity_id] { playPlaylist(entity_id, 0); });
 
+            auto* shuffleAction = menu.addAction("Play Shuffled");
+            connect(shuffleAction, &QAction::triggered, this,
+                    [this, entity_id] { playShuffledPlaylist(entity_id); });
+
             menu.addSeparator();
             auto* renameAction = menu.addAction("Rename…");
             connect(renameAction, &QAction::triggered, this, [this, entity_id, idx] {
@@ -903,7 +994,10 @@ void MainWindow::onPlaylistsContextMenu(const QPoint& pos) {
             return;
         }
         reloadPlaylists();
-        QString msg = QString("Imported %1 tracks").arg(res.matched);
+        QString msg = QString("Imported %1 tracks").arg(res.matched + res.relinked);
+        if (res.relinked > 0) {
+            msg += QString(" (%1 relinked by filename)").arg(res.relinked);
+        }
         if (res.missing > 0) {
             msg += QString(" — %1 path(s) not in library").arg(res.missing);
         }
