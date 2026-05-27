@@ -53,12 +53,52 @@ bool Database::open(const std::string& path) {
     }
 
     if (!exec("PRAGMA journal_mode = WAL;")) return false;
-    if (!exec("PRAGMA foreign_keys = ON;")) return false;
     if (!exec("PRAGMA synchronous = NORMAL;")) return false;
+
+    // Migrations that rewrite tables must run with foreign keys off so a table
+    // rebuild doesn't trip referential actions mid-flight.
+    migrate();
+
+    if (!exec("PRAGMA foreign_keys = ON;")) return false;
     if (!exec(kSchemaSql)) return false;
     if (!exec(("PRAGMA user_version = " + std::to_string(kSchemaVersion) + ";").c_str())) return false;
 
     return true;
+}
+
+void Database::migrate() {
+    // v3: playlist_tracks gained a `path` column and switched track_id from
+    // NOT NULL/CASCADE to nullable/SET NULL. Detect the old shape (table exists
+    // but has no `path` column) and rebuild it, backfilling paths from tracks.
+    bool table_exists = false, has_path = false;
+    {
+        Stmt s(db_, "PRAGMA table_info(playlist_tracks)");
+        while (sqlite3_step(s) == SQLITE_ROW) {
+            table_exists = true;
+            const auto* col = sqlite3_column_text(s, 1);  // column 1 = name
+            if (col && std::string(reinterpret_cast<const char*>(col)) == "path") {
+                has_path = true;
+            }
+        }
+    }
+    if (!table_exists || has_path) return;
+
+    exec("PRAGMA foreign_keys = OFF;");
+    exec("BEGIN");
+    exec("ALTER TABLE playlist_tracks RENAME TO playlist_tracks_old");
+    exec("CREATE TABLE playlist_tracks ("
+         "  playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,"
+         "  track_id    INTEGER REFERENCES tracks(id) ON DELETE SET NULL,"
+         "  path        TEXT NOT NULL DEFAULT '',"
+         "  position    INTEGER NOT NULL,"
+         "  PRIMARY KEY (playlist_id, position))");
+    exec("INSERT INTO playlist_tracks(playlist_id, track_id, path, position) "
+         "SELECT pt.playlist_id, pt.track_id, "
+         "       COALESCE((SELECT path FROM tracks WHERE id = pt.track_id), ''), "
+         "       pt.position "
+         "FROM playlist_tracks_old pt");
+    exec("DROP TABLE playlist_tracks_old");
+    exec("COMMIT");
 }
 
 void Database::close() {
@@ -360,11 +400,12 @@ bool Database::add_track_to_playlist(int64_t playlist_id, int64_t track_id) {
         sqlite3_bind_int64(s, 1, playlist_id);
         if (sqlite3_step(s) == SQLITE_ROW) next_pos = sqlite3_column_int(s, 0);
     }
-    Stmt ins(db_, "INSERT INTO playlist_tracks(playlist_id, track_id, position) "
-                  "VALUES (?, ?, ?)");
+    Stmt ins(db_, "INSERT INTO playlist_tracks(playlist_id, track_id, path, position) "
+                  "VALUES (?, ?, (SELECT path FROM tracks WHERE id = ?), ?)");
     sqlite3_bind_int64(ins, 1, playlist_id);
     sqlite3_bind_int64(ins, 2, track_id);
-    sqlite3_bind_int(ins, 3, next_pos);
+    sqlite3_bind_int64(ins, 3, track_id);
+    sqlite3_bind_int(ins, 4, next_pos);
     return sqlite3_step(ins) == SQLITE_DONE;
 }
 
@@ -387,12 +428,14 @@ bool Database::set_playlist_positions(int64_t playlist_id,
         }
     }
     Stmt ins(db_,
-             "INSERT INTO playlist_tracks(playlist_id, track_id, position) VALUES (?, ?, ?)");
+             "INSERT INTO playlist_tracks(playlist_id, track_id, path, position) "
+             "VALUES (?, ?, (SELECT path FROM tracks WHERE id = ?), ?)");
     for (size_t i = 0; i < track_ids.size(); ++i) {
         sqlite3_reset(ins);
         sqlite3_bind_int64(ins, 1, playlist_id);
         sqlite3_bind_int64(ins, 2, track_ids[i]);
-        sqlite3_bind_int(ins, 3, static_cast<int>(i));
+        sqlite3_bind_int64(ins, 3, track_ids[i]);
+        sqlite3_bind_int(ins, 4, static_cast<int>(i));
         if (sqlite3_step(ins) != SQLITE_DONE) {
             sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
             return false;
@@ -433,10 +476,54 @@ std::optional<int64_t> Database::track_id_for_basename(std::string_view basename
 }
 
 bool Database::repoint_playlist_tracks(int64_t from_id, int64_t to_id) {
-    Stmt s(db_, "UPDATE playlist_tracks SET track_id = ? WHERE track_id = ?");
+    // Refresh the stored path too: the new row is the same file at a new
+    // location, so the path snapshot must follow it.
+    Stmt s(db_, "UPDATE playlist_tracks "
+                "SET track_id = ?, path = (SELECT path FROM tracks WHERE id = ?) "
+                "WHERE track_id = ?");
     sqlite3_bind_int64(s, 1, to_id);
-    sqlite3_bind_int64(s, 2, from_id);
+    sqlite3_bind_int64(s, 2, to_id);
+    sqlite3_bind_int64(s, 3, from_id);
     return sqlite3_step(s) == SQLITE_DONE;
+}
+
+int Database::reconcile_playlists() {
+    auto unresolved_count = [&] {
+        Stmt s(db_, "SELECT COUNT(*) FROM playlist_tracks "
+                    "WHERE track_id IS NULL AND path <> ''");
+        return sqlite3_step(s) == SQLITE_ROW ? sqlite3_column_int(s, 0) : 0;
+    };
+    const int before = unresolved_count();
+
+    // First pass: exact path match, done entirely in SQL.
+    exec("UPDATE playlist_tracks "
+         "SET track_id = (SELECT id FROM tracks WHERE tracks.path = playlist_tracks.path) "
+         "WHERE track_id IS NULL AND path <> '' "
+         "AND EXISTS (SELECT 1 FROM tracks WHERE tracks.path = playlist_tracks.path)");
+
+    // Second pass: for anything still unresolved, try a unique-filename match
+    // (handles a file that moved while the library was gone). Collect first,
+    // then update, so we're not mutating the table mid-iteration.
+    std::vector<std::pair<int64_t, std::string>> pending;  // (rowid, path)
+    {
+        Stmt s(db_, "SELECT rowid, path FROM playlist_tracks "
+                    "WHERE track_id IS NULL AND path <> ''");
+        while (sqlite3_step(s) == SQLITE_ROW) {
+            pending.emplace_back(sqlite3_column_int64(s, 0),
+                                 reinterpret_cast<const char*>(sqlite3_column_text(s, 1)));
+        }
+    }
+    for (const auto& [rowid, path] : pending) {
+        const std::string base = std::filesystem::path(path).filename().string();
+        if (auto id = track_id_for_basename(base)) {
+            Stmt up(db_, "UPDATE playlist_tracks SET track_id = ? WHERE rowid = ?");
+            sqlite3_bind_int64(up, 1, *id);
+            sqlite3_bind_int64(up, 2, rowid);
+            sqlite3_step(up);
+        }
+    }
+
+    return before - unresolved_count();
 }
 
 std::vector<std::pair<int64_t, std::string>> Database::all_track_paths() {

@@ -153,6 +153,12 @@ public:
     // playlists intact when a moved file is rediscovered under a new row.
     bool repoint_playlist_tracks(int64_t from_id, int64_t to_id);
 
+    // Re-resolves playlist entries whose track_id is NULL (e.g. after the
+    // library was cleared and re-added) back to a track by their stored path —
+    // exact path first, then a unique-filename fallback. Run after a scan.
+    // Returns how many entries were reconnected.
+    int reconcile_playlists();
+
     // All tracks as (id, path). Used by the rescan flow.
     std::vector<std::pair<int64_t, std::string>> all_track_paths();
 
@@ -169,14 +175,17 @@ public:
     bool remove_root(std::string_view path);
     std::vector<std::string> all_roots();
 
-    // Wipes the entire catalog: tracks, albums, artists, and roots.
-    // Playlist definitions remain, but their track links cascade away.
+    // Wipes the entire catalog: tracks, albums, artists, and roots. Playlists
+    // are preserved: each entry keeps its file path and is detached (track_id
+    // set NULL) rather than deleted, so reconcile_playlists() can reconnect it
+    // after the library is re-added.
     void clear_library();
 
     sqlite3* handle() { return db_; }
 
 private:
     bool exec(const char* sql);
+    void migrate();
     int64_t upsert_artist(std::string_view name);
     int64_t upsert_album(std::string_view name, int64_t artist_id, int year,
                          std::string_view cover_path);

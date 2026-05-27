@@ -4,7 +4,7 @@ namespace auralbit::library {
 
 // Bumped on any incompatible schema change. The DB wrapper runs migrations
 // up to this version on open.
-constexpr int kSchemaVersion = 2;
+constexpr int kSchemaVersion = 3;
 
 constexpr const char* kSchemaSql = R"SQL(
 CREATE TABLE IF NOT EXISTS artists (
@@ -46,9 +46,15 @@ CREATE TABLE IF NOT EXISTS playlists (
     created_at INTEGER NOT NULL
 );
 
+-- `path` is the durable reference to the track's file: track_id is only a
+-- resolved cache, so clearing/re-adding the library (which renumbers track
+-- ids) sets track_id NULL but keeps the entry, and reconcile_playlists()
+-- re-resolves it by path. Without this, a library wipe would cascade-delete
+-- every playlist's contents.
 CREATE TABLE IF NOT EXISTS playlist_tracks (
     playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
-    track_id    INTEGER NOT NULL REFERENCES tracks(id)    ON DELETE CASCADE,
+    track_id    INTEGER REFERENCES tracks(id) ON DELETE SET NULL,
+    path        TEXT NOT NULL DEFAULT '',
     position    INTEGER NOT NULL,
     PRIMARY KEY (playlist_id, position)
 );

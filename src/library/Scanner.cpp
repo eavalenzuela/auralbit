@@ -219,6 +219,9 @@ ScanStats Scanner::scan(const std::string& root, ProgressFn on_progress, bool fo
     }
 
     sqlite3_exec(db_.handle(), "COMMIT", nullptr, nullptr, nullptr);
+    // Reconnect any playlist entries that were waiting on these files (e.g.
+    // after a Remove Library + re-add, or a newly added folder).
+    db_.reconcile_playlists();
     return stats;
 }
 
@@ -311,6 +314,7 @@ ScanStats Scanner::rescan_all(ProgressFn on_progress) {
     sqlite3_exec(db_.handle(), "COMMIT", nullptr, nullptr, nullptr);
 
     db_.prune_orphans();
+    db_.reconcile_playlists();
     return stats;
 }
 

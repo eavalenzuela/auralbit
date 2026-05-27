@@ -73,6 +73,25 @@ int cmd_rescan() {
     return 0;
 }
 
+int cmd_clear() {
+    auralbit::library::Database db;
+    if (!db.open(auralbit::library::Database::default_path())) return 1;
+    db.clear_library();
+    std::printf("library cleared (playlists kept, entries detached)\n");
+    return 0;
+}
+
+int cmd_playlists() {
+    auralbit::library::Database db;
+    if (!db.open(auralbit::library::Database::default_path())) return 1;
+    for (const auto& p : db.all_playlists()) {
+        const auto tracks = db.tracks_for_playlist(p.id);
+        std::printf("  [%lld] %s — %zu resolved track(s)\n",
+                    (long long)p.id, p.name.c_str(), tracks.size());
+    }
+    return 0;
+}
+
 int cmd_import(const char* file) {
     auralbit::library::Database db;
     if (!db.open(auralbit::library::Database::default_path())) return 1;
@@ -107,6 +126,8 @@ void usage() {
                  "  auralbit-cli scan <folder>    scan folder into the library DB\n"
                  "  auralbit-cli rescan           re-walk known roots, sync with disk\n"
                  "  auralbit-cli import <file>    import an m3u/pls playlist\n"
+                 "  auralbit-cli playlists        list playlists and resolved track counts\n"
+                 "  auralbit-cli clear            wipe the catalog (keeps playlists)\n"
                  "  auralbit-cli list [N]         list first N tracks (default 20)\n");
 }
 
@@ -120,6 +141,8 @@ int main(int argc, char** argv) {
     if (cmd == "scan" && argc >= 3) return cmd_scan(argv[2]);
     if (cmd == "rescan")            return cmd_rescan();
     if (cmd == "import" && argc >= 3) return cmd_import(argv[2]);
+    if (cmd == "clear")             return cmd_clear();
+    if (cmd == "playlists")         return cmd_playlists();
     if (cmd == "list")              return cmd_list(argc >= 3 ? std::atoi(argv[2]) : 20);
 
     // Back-compat: a single positional arg is treated as `play`.
