@@ -35,6 +35,15 @@ bool is_supported(const fs::path& p) {
     return ext == ".mp3" || ext == ".flac" || ext == ".wav" || ext == ".ogg" || ext == ".oga";
 }
 
+// Directories the scanner refuses to descend into. Covers the library-cleanup
+// "_quarantine" holding area (dup/backup files we don't want re-imported) and
+// hidden dot-directories, which never hold a user's music.
+bool is_ignored_dir(const fs::path& p) {
+    const std::string name = p.filename().string();
+    if (name == "_quarantine") return true;
+    return name.size() > 1 && name[0] == '.';
+}
+
 std::string sanitize(std::string_view in) {
     std::string out;
     out.reserve(in.size());
@@ -163,6 +172,11 @@ ScanStats Scanner::scan(const std::string& root, ProgressFn on_progress, bool fo
     for (; it != fs::recursive_directory_iterator(); it.increment(ec)) {
         if (ec) {
             ec.clear();
+            continue;
+        }
+        // Prune ignored directories before descending into them.
+        if (it->is_directory(ec) && is_ignored_dir(it->path())) {
+            it.disable_recursion_pending();
             continue;
         }
         if (!it->is_regular_file(ec)) continue;
